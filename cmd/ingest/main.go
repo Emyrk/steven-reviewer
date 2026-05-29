@@ -54,7 +54,7 @@ func main() {
 		fs.Parse(args)
 		exit(runWalk(*cfgPath, fs.Args()))
 	case "serve":
-		bind := fs.String("bind", "127.0.0.1:8080", "host:port to listen on")
+		bind := fs.String("bind", "0.0.0.0:8080", "host:port to listen on")
 		fs.Parse(args)
 		exit(runServe(*cfgPath, *bind))
 	case "status":
