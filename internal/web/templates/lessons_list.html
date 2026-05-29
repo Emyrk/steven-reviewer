@@ -1,0 +1,54 @@
+{{template "head" .}}
+
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-xl font-semibold">🧠 lessons</h1>
+  <div class="text-xs text-gray-500">
+    {{range $k, $n := .Stats}}<span class="mr-2"><span class="font-mono">{{$k}}</span>: {{$n}}</span>{{end}}
+  </div>
+</div>
+
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">status:</span>
+  {{range .Statuses}}
+  <a href="/lessons?status={{.}}{{if $.KindFilter}}&kind={{$.KindFilter}}{{end}}"
+     class="px-2 py-1 rounded {{if eq $.StatusFilter .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">{{.}}</a>
+  {{end}}
+</div>
+
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">kind:</span>
+  <a href="/lessons?status={{.StatusFilter}}"
+     class="px-2 py-1 rounded {{if eq .KindFilter ""}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">all</a>
+  {{range .Kinds}}
+  <a href="/lessons?status={{$.StatusFilter}}&kind={{.}}"
+     class="px-2 py-1 rounded {{if eq $.KindFilter .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">{{.}}</a>
+  {{end}}
+</div>
+
+<div class="text-sm text-gray-500 mb-2">{{len .Lessons}} lessons</div>
+
+{{range .Lessons}}
+<div class="mb-3 p-3 rounded border
+            {{if eq .Status "proposed"}}border-purple-300 bg-purple-50
+            {{else if eq .Status "accepted"}}border-green-400 bg-green-50
+            {{else if eq .Status "edited"}}border-blue-400 bg-blue-50
+            {{else if eq .Status "rejected"}}border-gray-300 bg-gray-100 opacity-60
+            {{else}}border-gray-200{{end}}">
+  <div class="flex items-start gap-2 mb-1 text-xs">
+    <span class="font-mono px-1.5 py-0.5 rounded
+                 {{if eq .Kind "pattern"}}bg-green-200 text-green-900
+                 {{else if eq .Kind "antipattern"}}bg-red-200 text-red-900
+                 {{else if eq .Kind "tradeoff"}}bg-amber-200 text-amber-900
+                 {{else if eq .Kind "convention"}}bg-blue-200 text-blue-900
+                 {{else if eq .Kind "gotcha"}}bg-orange-200 text-orange-900
+                 {{else}}bg-gray-200{{end}}">{{.Kind}}</span>
+    <span class="px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{{.Status}}</span>
+    <a href="/pr/{{.Repo}}/{{.PRNumber}}" class="text-blue-600 hover:underline">{{.Repo}}#{{.PRNumber}}</a>
+    <span class="text-gray-400 ml-auto">{{if .Model}}{{.Model}} · {{end}}{{.Source}}</span>
+  </div>
+  <div class="font-semibold">{{.Title}}</div>
+  <div class="text-sm text-gray-800 whitespace-pre-wrap">{{.Body}}</div>
+</div>
+{{end}}
+
+{{template "foot" .}}

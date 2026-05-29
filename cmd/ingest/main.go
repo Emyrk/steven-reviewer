@@ -22,6 +22,7 @@ import (
 	"github.com/Emyrk/steven-reviewer/internal/config"
 	"github.com/Emyrk/steven-reviewer/internal/db"
 	"github.com/Emyrk/steven-reviewer/internal/gh"
+	"github.com/Emyrk/steven-reviewer/internal/hermes"
 	"github.com/Emyrk/steven-reviewer/internal/web"
 )
 
@@ -233,7 +234,15 @@ func runServe(cfgPath, bind string) error {
 	} else {
 		log.Printf("serve: no GH token (%v) — /prs/random will only show cached PR meta", terr)
 	}
-	srv, err := web.NewServer(d, ghc)
+	// Optional Hermes API client for the "propose lessons" feature.
+	var hmc *hermes.Client
+	if cfg.Hermes.Key != "" {
+		hmc = hermes.New(cfg.Hermes.URL, cfg.Hermes.Key, cfg.Hermes.Model, 0)
+		log.Printf("serve: Hermes lessons enabled (url=%s model=%s)", cfg.Hermes.URL, cfg.Hermes.Model)
+	} else {
+		log.Printf("serve: Hermes lessons disabled (set hermes.key in config.yml or $HERMES_API_KEY)")
+	}
+	srv, err := web.NewServer(d, ghc, hmc)
 	if err != nil {
 		return err
 	}

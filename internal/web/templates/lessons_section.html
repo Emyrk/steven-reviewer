@@ -1,0 +1,110 @@
+{{define "lessons_section"}}
+{{/* lessons_section.html — renders the lessons section for a PR detail.
+     Designed for HTMX swap into #lessons-section. */}}
+<div id="lessons-section" class="mt-6 border-t border-gray-200 pt-4">
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-lg font-semibold">🧠 Lessons from this PR</h2>
+    <form hx-post="/pr/{{.Repo}}/{{.PRNumber}}/lessons/propose"
+          hx-target="#lessons-section"
+          hx-swap="outerHTML"
+          hx-indicator="#lessons-spinner">
+      <button type="submit"
+              class="px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm">
+        🧠 Propose lessons
+      </button>
+      <span id="lessons-spinner" class="htmx-indicator ml-2 text-sm text-gray-500">
+        thinking…
+      </span>
+    </form>
+  </div>
+
+  {{if not .Lessons}}
+    <div class="text-sm text-gray-400 italic">
+      No lessons yet. Click <span class="font-mono">🧠 Propose lessons</span> to ask Hermes what's worth learning from this PR.
+    </div>
+  {{end}}
+
+  {{range .Lessons}}
+    <div class="mb-3 p-3 rounded border
+                {{if eq .Status "proposed"}}border-purple-300 bg-purple-50
+                {{else if eq .Status "accepted"}}border-green-400 bg-green-50
+                {{else if eq .Status "edited"}}border-blue-400 bg-blue-50
+                {{else if eq .Status "rejected"}}border-gray-300 bg-gray-100 opacity-60
+                {{else}}border-gray-200{{end}}">
+      <div class="flex items-start gap-2 mb-1">
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded
+                     {{if eq .Kind "pattern"}}bg-green-200 text-green-900
+                     {{else if eq .Kind "antipattern"}}bg-red-200 text-red-900
+                     {{else if eq .Kind "tradeoff"}}bg-amber-200 text-amber-900
+                     {{else if eq .Kind "convention"}}bg-blue-200 text-blue-900
+                     {{else if eq .Kind "gotcha"}}bg-orange-200 text-orange-900
+                     {{else}}bg-gray-200{{end}}">{{.Kind}}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{{.Status}}</span>
+        <span class="text-xs text-gray-400 ml-auto">
+          {{if .Model}}{{.Model}} · {{end}}{{.Source}}
+        </span>
+      </div>
+      <div class="font-semibold mb-1">{{.Title}}</div>
+      <div class="text-sm text-gray-800 whitespace-pre-wrap mb-2">{{.Body}}</div>
+
+      {{if eq .Status "proposed"}}
+        <div class="flex gap-2 text-sm">
+          <form hx-post="/lesson/{{.ID}}/decide"
+                hx-target="#lessons-section" hx-swap="outerHTML" class="inline">
+            <input type="hidden" name="status" value="accepted">
+            <button class="px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">✓ accept</button>
+          </form>
+          <form hx-post="/lesson/{{.ID}}/decide"
+                hx-target="#lessons-section" hx-swap="outerHTML" class="inline">
+            <input type="hidden" name="status" value="rejected">
+            <button class="px-2 py-1 bg-gray-300 text-gray-800 rounded hover:bg-gray-400">✗ reject</button>
+          </form>
+          <button type="button"
+                  class="px-2 py-1 bg-blue-200 text-blue-900 rounded hover:bg-blue-300"
+                  onclick="document.getElementById('edit-{{.ID}}').classList.toggle('hidden')">
+            ✎ edit
+          </button>
+        </div>
+      {{else}}
+        <div class="flex gap-2 text-xs text-gray-500">
+          <button type="button"
+                  class="hover:text-blue-700"
+                  onclick="document.getElementById('edit-{{.ID}}').classList.toggle('hidden')">
+            ✎ edit
+          </button>
+          <form hx-post="/lesson/{{.ID}}/delete"
+                hx-target="#lessons-section" hx-swap="outerHTML"
+                hx-confirm="Delete this lesson?" class="inline">
+            <button class="hover:text-red-700">🗑 delete</button>
+          </form>
+        </div>
+      {{end}}
+
+      <div id="edit-{{.ID}}" class="hidden mt-2 p-2 bg-white border border-gray-200 rounded">
+        <form hx-post="/lesson/{{.ID}}/edit"
+              hx-target="#lessons-section" hx-swap="outerHTML">
+          <div class="mb-1">
+            <label class="text-xs text-gray-500">kind</label>
+            <select name="kind" class="border border-gray-300 rounded px-1 py-0.5 text-sm">
+              {{$cur := .Kind}}
+              {{range (list "pattern" "antipattern" "tradeoff" "convention" "gotcha")}}
+                <option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{.}}</option>
+              {{end}}
+            </select>
+          </div>
+          <div class="mb-1">
+            <input name="title" value="{{.Title}}"
+                   class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+          </div>
+          <div class="mb-1">
+            <textarea name="body" rows="3"
+                      class="w-full border border-gray-300 rounded px-2 py-1 text-sm">{{.Body}}</textarea>
+          </div>
+          <button class="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">save</button>
+        </form>
+      </div>
+    </div>
+  {{end}}
+</div>
+
+{{end}}

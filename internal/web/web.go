@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Emyrk/steven-reviewer/internal/gh"
+	"github.com/Emyrk/steven-reviewer/internal/hermes"
 	"github.com/Emyrk/steven-reviewer/internal/model"
 	"github.com/alecthomas/chroma/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -35,13 +36,15 @@ type Server struct {
 	db   *sql.DB
 	tmpl *template.Template
 	md   goldmark.Markdown
-	gh   *gh.Client // optional, nil disables lazy PR-meta fetch
+	gh   *gh.Client     // optional, nil disables lazy PR-meta fetch
+	hm   *hermes.Client // optional, nil disables lesson proposal
 }
 
 // NewServer constructs a Server. The database must already be migrated.
 // ghc may be nil; if so, /prs/random will only show PRs already cached
-// in the prs table.
-func NewServer(db *sql.DB, ghc *gh.Client) (*Server, error) {
+// in the prs table. hm may be nil; if so, the "propose lessons" button
+// returns 503.
+func NewServer(db *sql.DB, ghc *gh.Client, hm *hermes.Client) (*Server, error) {
 	funcs := template.FuncMap{
 		"ucFirst": func(s string) string {
 			if s == "" {
@@ -71,7 +74,7 @@ func NewServer(db *sql.DB, ghc *gh.Client) (*Server, error) {
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 	)
-	return &Server{db: db, tmpl: tmpl, md: md, gh: ghc}, nil
+	return &Server{db: db, tmpl: tmpl, md: md, gh: ghc, hm: hm}, nil
 }
 
 // Routes returns the mux.
@@ -90,6 +93,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /api/comments", s.handleAPIList)
+
+	// Lessons
+	mux.HandleFunc("POST /pr/{repo_owner}/{repo_name}/{number}/lessons/propose", s.handleLessonsPropose)
+	mux.HandleFunc("POST /lesson/{id}/decide", s.handleLessonDecide)
+	mux.HandleFunc("POST /lesson/{id}/edit", s.handleLessonEdit)
+	mux.HandleFunc("POST /lesson/{id}/delete", s.handleLessonDelete)
+	mux.HandleFunc("GET /lessons", s.handleLessonsList)
 
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
@@ -869,6 +879,11 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 		"Comments":   comments,
 		"Decisions":  triageDecisions,
 		"PRTags":     prTags,
+		"LessonsData": map[string]any{
+			"Repo":     repo,
+			"PRNumber": num,
+			"Lessons":  func() []Lesson { l, _ := s.loadLessons(repo, num); return l }(),
+		},
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "pr_detail.html", data); err != nil {
 		http.Error(w, err.Error(), 500)

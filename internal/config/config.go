@@ -24,6 +24,17 @@ type Config struct {
 	MyAgentPath   string `yaml:"my_agent_path"`
 	DefaultAuthor string `yaml:"default_author"`
 	Repos         []Repo `yaml:"repos"`
+	Hermes        Hermes `yaml:"hermes"`
+}
+
+// Hermes configures the local Hermes API server used for lesson proposal.
+// URL/key may be sourced from env (HERMES_API_URL, HERMES_API_KEY) — config
+// values win if both set.
+type Hermes struct {
+	URL    string `yaml:"url"`     // e.g. http://localhost:8642/v1
+	Key    string `yaml:"key"`     // bearer token (API_SERVER_KEY)
+	KeyEnv string `yaml:"key_env"` // alternate: read key from named env var
+	Model  string `yaml:"model"`   // always "hermes-agent" unless changed
 }
 
 // Load reads and parses the config file at path. Tilde-prefixed paths are
@@ -50,6 +61,22 @@ func Load(path string) (*Config, error) {
 		if c.Repos[i].Author == "" {
 			c.Repos[i].Author = c.DefaultAuthor
 		}
+	}
+	// Hermes defaults + env fallback.
+	if c.Hermes.URL == "" {
+		c.Hermes.URL = os.Getenv("HERMES_API_URL")
+	}
+	if c.Hermes.URL == "" {
+		c.Hermes.URL = "http://localhost:8642/v1"
+	}
+	if c.Hermes.Model == "" {
+		c.Hermes.Model = "hermes-agent"
+	}
+	if c.Hermes.Key == "" && c.Hermes.KeyEnv != "" {
+		c.Hermes.Key = os.Getenv(c.Hermes.KeyEnv)
+	}
+	if c.Hermes.Key == "" {
+		c.Hermes.Key = os.Getenv("HERMES_API_KEY")
 	}
 	return &c, nil
 }

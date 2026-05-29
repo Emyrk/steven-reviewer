@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}}</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif; }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
@@ -28,6 +29,7 @@
       <a href="/prs/random?status=pending" class="hover:text-gray-900">🎲 random</a>
       <a href="/search" class="hover:text-gray-900">🔎 search</a>
       <a href="/prs/mine" class="hover:text-gray-900">👤 my PRs</a>
+      <a href="/lessons" class="hover:text-gray-900">🧠 lessons</a>
       <a href="/?status=routed" class="hover:text-gray-900">routed</a>
       <a href="/?status=skipped" class="hover:text-gray-900">skipped</a>
       <a href="/?status=all" class="hover:text-gray-900">all</a>
