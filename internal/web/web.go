@@ -101,6 +101,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /lesson/{id}/delete", s.handleLessonDelete)
 	mux.HandleFunc("GET /lessons", s.handleLessonsList)
 
+	// Tenets
+	mux.HandleFunc("GET /tenets", s.handleTenetsList)
+	mux.HandleFunc("POST /tenets/propose", s.handleTenetsPropose)
+	mux.HandleFunc("POST /tenet/{id}/decide", s.handleTenetDecide)
+	mux.HandleFunc("POST /tenet/{id}/edit", s.handleTenetEdit)
+	mux.HandleFunc("POST /tenet/{id}/delete", s.handleTenetDelete)
+
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
 }
@@ -209,9 +216,9 @@ func (s *Server) queryStatusCounts(repoFilter string) ([]statusCount, error) {
 
 // decision is one row in the triage button grid.
 type decision struct {
-	Key  string
+	Key   string
 	Value string
-	Desc string
+	Desc  string
 }
 
 var triageDecisions = []decision{
@@ -920,19 +927,19 @@ var _ chroma.Style // keep import for clarity
 // --- /prs/random: shuffle deck of 5 PRs ----------------------------------
 
 type randomPRCard struct {
-	Repo        string
-	PRNumber    int
-	Title       string
-	Opener      string
-	OpenedAt    string // human "May 29, 2026"
-	State       string // open|closed|merged
-	Total       int
-	Pending     int
-	Routed      int
-	Skipped     int
-	Weight      string
-	Cached      bool // false means we tried GH and failed
-	Err         string
+	Repo     string
+	PRNumber int
+	Title    string
+	Opener   string
+	OpenedAt string // human "May 29, 2026"
+	State    string // open|closed|merged
+	Total    int
+	Pending  int
+	Routed   int
+	Skipped  int
+	Weight   string
+	Cached   bool // false means we tried GH and failed
+	Err      string
 }
 
 // handlePRRandom picks N (default 5) random PRs from the comments table
@@ -1319,7 +1326,7 @@ type minePR struct {
 
 func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 	repoFilter := r.URL.Query().Get("repo")
-	weightFilter := r.URL.Query().Get("weight") // e.g. "canonical", "like", "skip", ""
+	weightFilter := r.URL.Query().Get("weight")       // e.g. "canonical", "like", "skip", ""
 	hideDone := r.URL.Query().Get("hide_done") != "0" // default: hide done
 	maxLines := 0
 	if v := r.URL.Query().Get("max_lines"); v != "" {
@@ -1423,19 +1430,19 @@ func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 	doneCount := 0
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pr_tags pt JOIN prs p ON p.repo = pt.repo AND p.number = pt.pr_number WHERE pt.tag = 'done' AND p.authored_by_me = 1`).Scan(&doneCount)
 	data := map[string]any{
-		"Title":          "my PRs · steven-reviewer",
-		"PRs":            filtered,
-		"Repos":          repos,
-		"RepoFilter":     repoFilter,
-		"MaxLines":       maxLines,
-		"MaxLinesOpts":   []int{50, 100, 200, 400, 800},
-		"MissingEnrich":  missingEnrich,
-		"HideDone":       hideDone,
-		"DoneCount":      doneCount,
-		"WeightFilter":   weightFilter,
-		"WeightOptions":  []string{"", "canonical", "high", "normal", "low", "skip"},
-		"Count":          len(filtered),
-		"TotalAuthored":  len(prs),
+		"Title":         "my PRs · steven-reviewer",
+		"PRs":           filtered,
+		"Repos":         repos,
+		"RepoFilter":    repoFilter,
+		"MaxLines":      maxLines,
+		"MaxLinesOpts":  []int{50, 100, 200, 400, 800},
+		"MissingEnrich": missingEnrich,
+		"HideDone":      hideDone,
+		"DoneCount":     doneCount,
+		"WeightFilter":  weightFilter,
+		"WeightOptions": []string{"", "canonical", "high", "normal", "low", "skip"},
+		"Count":         len(filtered),
+		"TotalAuthored": len(prs),
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "pr_mine.html", data); err != nil {
 		http.Error(w, err.Error(), 500)

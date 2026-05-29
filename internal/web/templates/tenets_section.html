@@ -1,0 +1,109 @@
+{{define "tenets_section"}}
+<div id="tenets-section">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-semibold">📜 tenets</h1>
+    <form hx-post="/tenets/propose" hx-target="#tenets-section" hx-swap="outerHTML" hx-indicator="#tenets-spinner">
+      <button type="submit" class="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-sm">
+        synthesize tenets from DB
+      </button>
+      <span id="tenets-spinner" class="htmx-indicator ml-2 text-sm text-gray-500">thinking…</span>
+    </form>
+  </div>
+
+  <p class="text-sm text-gray-600 mb-4">
+    Tenets are global review principles distilled from accepted lessons and high-signal GitHub comments. Rate or edit every one before it becomes part of the reviewer brain.
+  </p>
+
+  <div class="flex items-center gap-2 mb-3 text-sm">
+    <span class="text-gray-500">status:</span>
+    {{range .Statuses}}
+    <a href="/tenets?status={{.}}{{if $.CategoryFilter}}&category={{$.CategoryFilter}}{{end}}"
+       class="px-2 py-1 rounded {{if eq $.StatusFilter .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">{{.}}</a>
+    {{end}}
+  </div>
+
+  <div class="flex items-center gap-2 mb-4 text-sm flex-wrap">
+    <span class="text-gray-500">category:</span>
+    <a href="/tenets?status={{.StatusFilter}}"
+       class="px-2 py-1 rounded {{if eq .CategoryFilter ""}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">all</a>
+    {{range .Categories}}
+    <a href="/tenets?status={{$.StatusFilter}}&category={{.}}"
+       class="px-2 py-1 rounded {{if eq $.CategoryFilter .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">{{.}}</a>
+    {{end}}
+  </div>
+
+  <div class="text-xs text-gray-500 mb-3">
+    accepted counts:
+    {{range $k, $n := .Stats}}<span class="mr-2"><span class="font-mono">{{$k}}</span>: {{$n}}</span>{{end}}
+  </div>
+
+  {{if not .Tenets}}
+  <div class="text-sm text-gray-400 italic bg-white border border-gray-200 rounded p-4">
+    No tenets in this view. Click synthesize to propose some from the DB.
+  </div>
+  {{end}}
+
+  {{range .Tenets}}
+  <div class="mb-3 p-3 rounded border
+              {{if eq .Status "proposed"}}border-indigo-300 bg-indigo-50
+              {{else if eq .Status "canonical"}}border-yellow-500 bg-yellow-50
+              {{else if eq .Status "strong"}}border-emerald-500 bg-emerald-50
+              {{else if eq .Status "accepted"}}border-green-400 bg-green-50
+              {{else if eq .Status "weak"}}border-amber-300 bg-amber-50
+              {{else if eq .Status "edited"}}border-blue-400 bg-blue-50
+              {{else if eq .Status "rejected"}}border-gray-300 bg-gray-100 opacity-60
+              {{else}}border-gray-200 bg-white{{end}}">
+    <div class="flex items-start gap-2 mb-1 text-xs">
+      <span class="font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-900">{{.Category}}</span>
+      <span class="px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{{.Status}}</span>
+      <span class="text-gray-400 ml-auto">{{if .Model}}{{.Model}} · {{end}}{{.Source}}</span>
+    </div>
+    <div class="font-semibold mb-1">{{.Name}}</div>
+    <div class="text-sm text-gray-900 font-medium whitespace-pre-wrap mb-1">{{.Statement}}</div>
+    <div class="text-sm text-gray-700 whitespace-pre-wrap mb-2">{{.Rationale}}</div>
+    <details class="text-xs text-gray-500 mb-2">
+      <summary class="cursor-pointer">evidence</summary>
+      <pre class="bg-white border border-gray-200 rounded p-2 overflow-x-auto">{{.Evidence}}</pre>
+    </details>
+
+    <div class="flex flex-wrap items-center gap-1 text-sm">
+      {{$curStatus := .Status}}
+      {{$id := .ID}}
+      {{range (list "rejected" "weak" "accepted" "strong" "canonical")}}
+        {{$emoji := "?"}}
+        {{if eq . "rejected"}}{{$emoji = "👎"}}{{end}}
+        {{if eq . "weak"}}{{$emoji = "🤷"}}{{end}}
+        {{if eq . "accepted"}}{{$emoji = "👍"}}{{end}}
+        {{if eq . "strong"}}{{$emoji = "💪"}}{{end}}
+        {{if eq . "canonical"}}{{$emoji = "⭐"}}{{end}}
+        <form hx-post="/tenet/{{$id}}/decide" hx-target="#tenets-section" hx-swap="outerHTML" class="inline">
+          <input type="hidden" name="status" value="{{.}}">
+          <button class="px-2 py-1 rounded {{if eq $curStatus .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400 text-gray-700{{end}}" title="{{.}}">{{$emoji}}</button>
+        </form>
+      {{end}}
+      <span class="text-gray-300 mx-1">|</span>
+      <button type="button" class="px-2 py-1 text-xs text-gray-500 hover:text-blue-700" onclick="document.getElementById('edit-tenet-{{.ID}}').classList.toggle('hidden')">✎ edit</button>
+      <form hx-post="/tenet/{{.ID}}/delete" hx-target="#tenets-section" hx-swap="outerHTML" hx-confirm="Delete this tenet?" class="inline">
+        <button class="px-2 py-1 text-xs text-gray-500 hover:text-red-700">🗑</button>
+      </form>
+    </div>
+
+    <div id="edit-tenet-{{.ID}}" class="hidden mt-2 p-2 bg-white border border-gray-200 rounded">
+      <form hx-post="/tenet/{{.ID}}/edit" hx-target="#tenets-section" hx-swap="outerHTML">
+        <div class="mb-1">
+          <label class="text-xs text-gray-500">category</label>
+          <select name="category" class="border border-gray-300 rounded px-1 py-0.5 text-sm">
+            {{$cur := .Category}}
+            {{range $.Categories}}<option value="{{.}}" {{if eq . $cur}}selected{{end}}>{{.}}</option>{{end}}
+          </select>
+        </div>
+        <input name="name" value="{{.Name}}" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-1">
+        <textarea name="statement" rows="2" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-1">{{.Statement}}</textarea>
+        <textarea name="rationale" rows="3" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-1">{{.Rationale}}</textarea>
+        <button class="px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm">save</button>
+      </form>
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}
