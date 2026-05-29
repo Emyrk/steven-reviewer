@@ -36,6 +36,20 @@
   {{end}}
 </div>
 
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">max diff lines:</span>
+  <a href="/prs/mine?repo={{.RepoFilter}}{{if .WeightFilter}}&weight={{.WeightFilter}}{{end}}"
+     class="px-2 py-1 rounded {{if eq .MaxLines 0}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">any</a>
+  {{range $.MaxLinesOpts}}
+  <a href="/prs/mine?repo={{$.RepoFilter}}{{if $.WeightFilter}}&weight={{$.WeightFilter}}{{end}}&max_lines={{.}}"
+     class="px-2 py-1 rounded {{if eq $.MaxLines .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}"
+     title="speed-run: only PRs with ≤{{.}} added+deleted lines">≤{{.}}</a>
+  {{end}}
+  {{if and (gt .MaxLines 0) (gt .MissingEnrich 0)}}
+  <span class="text-xs text-amber-700 ml-2" title="run: ./bin/ingest enrich-prs">⚠ {{.MissingEnrich}} authored PRs not yet enriched (hidden)</span>
+  {{end}}
+</div>
+
 <div class="text-sm text-gray-500 mb-2">{{.Count}} PRs ({{.TotalAuthored}} authored total in cache)</div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -48,6 +62,7 @@
         {{if eq $pr.State "merged"}}<span class="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">merged</span>
         {{else if eq $pr.State "closed"}}<span class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-800">closed</span>
         {{else if eq $pr.State "open"}}<span class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-800">open</span>{{end}}
+        {{if gt $pr.TotalLines 0}}<span class="text-xs px-1.5 py-0.5 rounded {{if le $pr.TotalLines 50}}bg-emerald-50 text-emerald-700{{else if le $pr.TotalLines 200}}bg-blue-50 text-blue-700{{else if le $pr.TotalLines 800}}bg-amber-50 text-amber-700{{else}}bg-red-50 text-red-700{{end}}" title="diff: additions + deletions">{{$pr.TotalLines}} lines</span>{{end}}
         {{if $pr.HasNote}}<span class="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-800" title="has a note">📝</span>{{end}}
         <span class="ml-auto mono text-xs text-gray-400">{{$pr.OpenedAt}}</span>
       </div>

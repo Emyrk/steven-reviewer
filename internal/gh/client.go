@@ -158,11 +158,14 @@ func (c *Client) FetchReviewCommentsPaged(ctx context.Context, repo, author, sin
 
 // PRMeta is a tiny subset of the PR object used by the random-deck view.
 type PRMeta struct {
-	Title     string
-	Opener    string // user.login
-	State     string // open | closed
-	Merged    bool
-	CreatedAt time.Time
+	Title        string
+	Opener       string // user.login
+	State        string // open | closed
+	Merged       bool
+	Additions    int
+	Deletions    int
+	ChangedFiles int
+	CreatedAt    time.Time
 }
 
 // FetchPRMeta returns the minimum metadata needed to render a PR card.
@@ -170,22 +173,28 @@ type PRMeta struct {
 // the prs table.
 func (c *Client) FetchPRMeta(ctx context.Context, repo string, number int) (PRMeta, error) {
 	var raw struct {
-		Title     string    `json:"title"`
-		State     string    `json:"state"`
-		Merged    bool      `json:"merged"`
-		User      struct{ Login string } `json:"user"`
-		CreatedAt time.Time `json:"created_at"`
+		Title        string    `json:"title"`
+		State        string    `json:"state"`
+		Merged       bool      `json:"merged"`
+		Additions    int       `json:"additions"`
+		Deletions    int       `json:"deletions"`
+		ChangedFiles int       `json:"changed_files"`
+		User         struct{ Login string } `json:"user"`
+		CreatedAt    time.Time `json:"created_at"`
 	}
 	path := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
 	if err := c.get(ctx, path, nil, &raw); err != nil {
 		return PRMeta{}, err
 	}
 	return PRMeta{
-		Title:     raw.Title,
-		Opener:    raw.User.Login,
-		State:     raw.State,
-		Merged:    raw.Merged,
-		CreatedAt: raw.CreatedAt,
+		Title:        raw.Title,
+		Opener:       raw.User.Login,
+		State:        raw.State,
+		Merged:       raw.Merged,
+		Additions:    raw.Additions,
+		Deletions:    raw.Deletions,
+		ChangedFiles: raw.ChangedFiles,
+		CreatedAt:    raw.CreatedAt,
 	}, nil
 }
 

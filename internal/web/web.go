@@ -531,6 +531,8 @@ type prGroup struct {
 	Types       string // comma-separated set
 	Weight      string // "skip" | "low" | "high" | "canonical" | "" (normal/unset)
 	Done        bool   // true if pr_tags has tag="done"
+	TotalLines  int    // additions+deletions; 0 means not enriched yet
+	State       string // open | closed | merged (from prs.state + prs.merged)
 }
 
 func (s *Server) queryPRGroups(repoFilter, statusFilter string, limit int) ([]prGroup, error) {
@@ -587,13 +589,19 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 		statusFilter = "pending"
 	}
 	hideDone := r.URL.Query().Get("hide_done") != "0" // default: hide done
+	maxLines := 0
+	if v := r.URL.Query().Get("max_lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxLines = n
+		}
+	}
 	limit := 200
 	groups, err := s.queryPRGroups(repoFilter, statusFilter, limit)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	// Attach weight + done tag per PR.
+	// Attach weight + done tag + state + diff size per PR.
 	if len(groups) > 0 {
 		weights := map[string]string{}
 		done := map[string]bool{}
@@ -614,21 +622,65 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 			}
 			wrows.Close()
 		}
+		// prs metadata: state + diff size in one pass.
+		type meta struct {
+			state string
+			lines int
+			known bool
+		}
+		metaBy := map[string]meta{}
+		prows, perr := s.db.Query(`SELECT repo, number, COALESCE(state,''), merged,
+		                                  COALESCE(additions,0), COALESCE(deletions,0)
+		                           FROM prs`)
+		if perr == nil {
+			for prows.Next() {
+				var rr string
+				var n, merged, adds, dels int
+				var st string
+				if prows.Scan(&rr, &n, &st, &merged, &adds, &dels) == nil {
+					if merged == 1 {
+						st = "merged"
+					}
+					metaBy[fmt.Sprintf("%s#%d", rr, n)] = meta{state: st, lines: adds + dels, known: adds+dels > 0}
+				}
+			}
+			prows.Close()
+		}
 		filtered := groups[:0]
+		var skippedNoLines, skippedTooBig int
 		for _, g := range groups {
 			key := fmt.Sprintf("%s#%d", g.Repo, g.PRNumber)
 			g.Weight = weights[key]
 			g.Done = done[key]
+			if m, ok := metaBy[key]; ok {
+				g.State = m.state
+				g.TotalLines = m.lines
+			}
 			if hideDone && g.Done {
 				continue
+			}
+			if maxLines > 0 {
+				if !metaBy[key].known {
+					skippedNoLines++
+					continue // unknown size — drop when filtering
+				}
+				if g.TotalLines > maxLines {
+					skippedTooBig++
+					continue
+				}
 			}
 			filtered = append(filtered, g)
 		}
 		groups = filtered
+		_ = skippedNoLines
+		_ = skippedTooBig
 	}
 	repos, _ := s.queryRepoCounts()
 	doneCount := 0
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pr_tags WHERE tag = 'done'`).Scan(&doneCount)
+	// Count PRs missing diff-size enrichment so the user knows what `max_lines` hides.
+	missingEnrich := 0
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE additions IS NULL OR additions = 0`).Scan(&missingEnrich)
 	data := map[string]any{
 		"Title":         "PRs · steven-reviewer",
 		"Groups":        groups,
@@ -638,6 +690,9 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 		"StatusOptions": []string{"pending", "routed", "skipped", "all"},
 		"HideDone":      hideDone,
 		"DoneCount":     doneCount,
+		"MaxLines":      maxLines,
+		"MaxLinesOpts":  []int{50, 100, 200, 400, 800},
+		"MissingEnrich": missingEnrich,
 		"Count":         len(groups),
 		"Limit":         limit,
 	}
@@ -775,12 +830,15 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 				prMerged = 1
 			}
 			prOpenedAt = m.CreatedAt.Format(time.RFC3339)
-			_, _ = s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, created_at, fetched_at)
-			                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			_, _ = s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, additions, deletions, changed_files, created_at, fetched_at)
+			                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			                  ON CONFLICT(repo, number) DO UPDATE SET
 			                    title=excluded.title, opener=excluded.opener, state=excluded.state,
-			                    merged=excluded.merged, created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
+			                    merged=excluded.merged,
+			                    additions=excluded.additions, deletions=excluded.deletions, changed_files=excluded.changed_files,
+			                    created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
 				repo, num, m.Title, m.Opener, m.State, prMerged,
+				m.Additions, m.Deletions, m.ChangedFiles,
 				m.CreatedAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
 		}
 	}
@@ -971,12 +1029,15 @@ func (s *Server) lookupOrFetchPRMeta(ctx context.Context, repo string, number in
 	if m.Merged {
 		mergedInt = 1
 	}
-	_, uerr := s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, created_at, fetched_at)
-	                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	_, uerr := s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, additions, deletions, changed_files, created_at, fetched_at)
+	                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	                      ON CONFLICT(repo, number) DO UPDATE SET
 	                        title=excluded.title, opener=excluded.opener, state=excluded.state,
-	                        merged=excluded.merged, created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
+	                        merged=excluded.merged,
+	                        additions=excluded.additions, deletions=excluded.deletions, changed_files=excluded.changed_files,
+	                        created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
 		repo, number, m.Title, m.Opener, m.State, mergedInt,
+		m.Additions, m.Deletions, m.ChangedFiles,
 		m.CreatedAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
 	if uerr != nil {
 		log.Printf("upsert prs %s#%d: %v", repo, number, uerr)
@@ -1220,20 +1281,28 @@ func snippetHighlight(text, q string, window int) template.HTML {
 // --- /prs/mine: PRs I authored -------------------------------------------
 
 type minePR struct {
-	Repo      string
-	PRNumber  int
-	Title     string
-	State     string
-	OpenedAt  string
-	Tags      []string // pr_tags
-	HasNote   bool
+	Repo       string
+	PRNumber   int
+	Title      string
+	State      string
+	OpenedAt   string
+	Tags       []string // pr_tags
+	HasNote    bool
+	TotalLines int
 }
 
 func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 	repoFilter := r.URL.Query().Get("repo")
 	weightFilter := r.URL.Query().Get("weight") // e.g. "canonical", "like", "skip", ""
+	maxLines := 0
+	if v := r.URL.Query().Get("max_lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxLines = n
+		}
+	}
 	q := `SELECT p.repo, p.number, COALESCE(p.title, ''), COALESCE(p.state, ''),
-	             COALESCE(p.created_at, ''), COALESCE(p.merged, 0)
+	             COALESCE(p.created_at, ''), COALESCE(p.merged, 0),
+	             COALESCE(p.additions, 0) + COALESCE(p.deletions, 0)
 	      FROM prs p
 	      WHERE p.authored_by_me = 1`
 	var args []any
@@ -1253,7 +1322,7 @@ func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 		var p minePR
 		var merged int
 		var createdAt string
-		if err := rows.Scan(&p.Repo, &p.PRNumber, &p.Title, &p.State, &createdAt, &merged); err != nil {
+		if err := rows.Scan(&p.Repo, &p.PRNumber, &p.Title, &p.State, &createdAt, &merged, &p.TotalLines); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -1300,15 +1369,25 @@ func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
+		if maxLines > 0 {
+			if p.TotalLines == 0 || p.TotalLines > maxLines {
+				continue
+			}
+		}
 		filtered = append(filtered, p)
 	}
 
 	repos, _ := s.queryRepoCounts()
+	missingEnrich := 0
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE authored_by_me = 1 AND (additions IS NULL OR additions = 0)`).Scan(&missingEnrich)
 	data := map[string]any{
 		"Title":          "my PRs · steven-reviewer",
 		"PRs":            filtered,
 		"Repos":          repos,
 		"RepoFilter":     repoFilter,
+		"MaxLines":       maxLines,
+		"MaxLinesOpts":   []int{50, 100, 200, 400, 800},
+		"MissingEnrich":  missingEnrich,
 		"WeightFilter":   weightFilter,
 		"WeightOptions":  []string{"", "canonical", "high", "normal", "low", "skip"},
 		"Count":          len(filtered),

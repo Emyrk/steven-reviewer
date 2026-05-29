@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -54,6 +55,10 @@ func main() {
 	case "pull-authored":
 		fs.Parse(args)
 		exit(runPullAuthored(*cfgPath, fs.Args()))
+	case "enrich-prs":
+		force := fs.Bool("force", false, "refetch even if additions is already set")
+		fs.Parse(args)
+		exit(runEnrichPRs(*cfgPath, fs.Args(), *force))
 	case "pull-threads":
 		force := fs.Bool("force", false, "re-fetch even if already cached")
 		fs.Parse(args)
@@ -427,4 +432,127 @@ func runPullThreads(cfgPath string, args []string, force bool) error {
 	fmt.Printf("==> done: fetched %d PRs (%d cached), %d new context comments, %d existed\n",
 		fetched, cached, totalIns, totalSkip)
 	return nil
+}
+
+// runEnrichPRs walks every distinct (repo, pr_number) seen in comments
+// (including authored_by_me PRs) and fetches diff size via
+// FetchPRMeta. Stores additions/deletions/changed_files in the prs
+// table so the viewer can filter by diff size without hitting GH.
+// Idempotent: skips rows where additions is already set unless --force.
+func runEnrichPRs(cfgPath string, args []string, force bool) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	token, err := cfg.Token()
+	if err != nil {
+		return err
+	}
+	client := gh.New(token)
+	d, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	repoFilter := ""
+	if len(args) > 0 {
+		repoFilter = args[0]
+	}
+
+	// Build candidate set: every (repo, pr_number) we have a comment for,
+	// PLUS every authored_by_me row in prs. UNION dedup-friendly.
+	q := `
+		SELECT DISTINCT repo, pr_number FROM comments
+		WHERE pr_number > 0` + ifNonEmpty(repoFilter, ` AND repo = ?`) + `
+		UNION
+		SELECT repo, number FROM prs
+		WHERE authored_by_me = 1` + ifNonEmpty(repoFilter, ` AND repo = ?`)
+	var qargs []any
+	if repoFilter != "" {
+		qargs = append(qargs, repoFilter, repoFilter)
+	}
+	rows, err := d.Query(q, qargs...)
+	if err != nil {
+		return err
+	}
+	type rk struct {
+		Repo   string
+		Number int
+	}
+	var candidates []rk
+	for rows.Next() {
+		var k rk
+		if err := rows.Scan(&k.Repo, &k.Number); err != nil {
+			rows.Close()
+			return err
+		}
+		candidates = append(candidates, k)
+	}
+	rows.Close()
+
+	fmt.Printf("==> enrich-prs: %d candidate PRs (force=%v)\n", len(candidates), force)
+
+	ctx := context.Background()
+	var fetched, cached, errs int
+	t0 := time.Now()
+	for i, k := range candidates {
+		if !force {
+			var addsRaw sql.NullInt64
+			_ = d.QueryRow(`SELECT additions FROM prs WHERE repo = ? AND number = ?`, k.Repo, k.Number).Scan(&addsRaw)
+			if addsRaw.Valid {
+				cached++
+				continue
+			}
+		}
+		m, err := client.FetchPRMeta(ctx, k.Repo, k.Number)
+		if err != nil {
+			errs++
+			if errs <= 5 || errs%50 == 0 {
+				fmt.Printf("    [%d/%d] %s#%d ERR: %v\n", i+1, len(candidates), k.Repo, k.Number, err)
+			}
+			continue
+		}
+		mergedInt := 0
+		if m.Merged {
+			mergedInt = 1
+		}
+		_, err = d.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, additions, deletions, changed_files, created_at, fetched_at)
+		                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                 ON CONFLICT(repo, number) DO UPDATE SET
+		                   title=COALESCE(NULLIF(excluded.title, ''), prs.title),
+		                   opener=COALESCE(NULLIF(excluded.opener, ''), prs.opener),
+		                   state=COALESCE(NULLIF(excluded.state, ''), prs.state),
+		                   merged=excluded.merged,
+		                   additions=excluded.additions,
+		                   deletions=excluded.deletions,
+		                   changed_files=excluded.changed_files,
+		                   created_at=COALESCE(NULLIF(excluded.created_at, ''), prs.created_at),
+		                   fetched_at=excluded.fetched_at`,
+			k.Repo, k.Number, m.Title, m.Opener, m.State, mergedInt,
+			m.Additions, m.Deletions, m.ChangedFiles,
+			m.CreatedAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			errs++
+			fmt.Printf("    upsert %s#%d ERR: %v\n", k.Repo, k.Number, err)
+			continue
+		}
+		fetched++
+		if fetched%50 == 0 {
+			elapsed := time.Since(t0).Round(time.Second)
+			rate := float64(fetched) / time.Since(t0).Seconds()
+			eta := time.Duration(float64(len(candidates)-i-1)/rate) * time.Second
+			fmt.Printf("    [%d/%d] fetched=%d cached=%d errs=%d elapsed=%s eta=%s\n",
+				i+1, len(candidates), fetched, cached, errs, elapsed, eta.Round(time.Second))
+		}
+	}
+	fmt.Printf("==> done: fetched=%d cached=%d errs=%d in %s\n", fetched, cached, errs, time.Since(t0).Round(time.Second))
+	return nil
+}
+
+func ifNonEmpty(s, clause string) string {
+	if s == "" {
+		return ""
+	}
+	return clause
 }

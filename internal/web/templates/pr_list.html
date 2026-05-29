@@ -31,6 +31,20 @@
   {{end}}
 </div>
 
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">max diff lines:</span>
+  <a href="/prs?repo={{.RepoFilter}}&status={{.StatusFilter}}{{if not .HideDone}}&hide_done=0{{end}}"
+     class="px-2 py-1 rounded {{if eq .MaxLines 0}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">any</a>
+  {{range $.MaxLinesOpts}}
+  <a href="/prs?repo={{$.RepoFilter}}&status={{$.StatusFilter}}{{if not $.HideDone}}&hide_done=0{{end}}&max_lines={{.}}"
+     class="px-2 py-1 rounded {{if eq $.MaxLines .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}"
+     title="speed-run: only PRs with ≤{{.}} added+deleted lines">≤{{.}}</a>
+  {{end}}
+  {{if and (gt .MaxLines 0) (gt .MissingEnrich 0)}}
+  <span class="text-xs text-amber-700 ml-2" title="run: ./bin/ingest enrich-prs">⚠ {{.MissingEnrich}} PRs not yet enriched (hidden)</span>
+  {{end}}
+</div>
+
 <div class="text-sm text-gray-500 mb-2">{{.Count}} PRs (limit {{.Limit}})</div>
 
 <div class="bg-white border border-gray-200 rounded divide-y divide-gray-100">
@@ -39,10 +53,16 @@
   <a href="/pr/{{index $parts 0}}/{{index $parts 1}}/{{.PRNumber}}" class="block px-4 py-3 hover:bg-gray-50">
     <div class="flex items-baseline gap-3">
       <span class="mono text-sm font-medium">{{.Repo}}#{{.PRNumber}}</span>
+      {{if eq .State "merged"}}<span class="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-800" title="merged">merged</span>
+      {{else if eq .State "closed"}}<span class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-800" title="closed, not merged">closed</span>
+      {{else if eq .State "open"}}<span class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-800" title="still open">open</span>{{end}}
       {{if .Done}}<span class="text-xs px-1.5 py-0.5 rounded bg-green-600 text-white font-medium" title="marked DONE">✓ done</span>{{end}}
       <span class="text-xs text-gray-400">{{.Types}}</span>
       {{if .Weight}}
         <span class="text-xs px-1.5 py-0.5 rounded {{if eq .Weight "skip"}}bg-gray-200 text-gray-700{{else if eq .Weight "low"}}bg-blue-100 text-blue-800{{else if eq .Weight "high"}}bg-emerald-100 text-emerald-800{{else}}bg-purple-100 text-purple-800{{end}}" title="PR weight: {{.Weight}}">weight: {{.Weight}}</span>
+      {{end}}
+      {{if gt .TotalLines 0}}
+        <span class="text-xs px-1.5 py-0.5 rounded {{if le .TotalLines 50}}bg-emerald-50 text-emerald-700{{else if le .TotalLines 200}}bg-blue-50 text-blue-700{{else if le .TotalLines 800}}bg-amber-50 text-amber-700{{else}}bg-red-50 text-red-700{{end}}" title="diff size (additions + deletions)">{{.TotalLines}} lines</span>
       {{end}}
       <span class="ml-auto mono text-xs text-gray-400">{{.LastComment}}</span>
     </div>
