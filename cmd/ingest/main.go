@@ -54,6 +54,10 @@ func main() {
 	case "pull-authored":
 		fs.Parse(args)
 		exit(runPullAuthored(*cfgPath, fs.Args()))
+	case "pull-threads":
+		force := fs.Bool("force", false, "re-fetch even if already cached")
+		fs.Parse(args)
+		exit(runPullThreads(*cfgPath, fs.Args(), *force))
 	case "walk":
 		fs.Parse(args)
 		exit(runWalk(*cfgPath, fs.Args()))
@@ -335,5 +339,92 @@ func runPullAuthored(cfgPath string, args []string) error {
 		}
 		fmt.Printf("    %d PRs (%d new, %d updated)\n", len(prs), inserted, updated)
 	}
+	return nil
+}
+
+// runPullThreads walks every PR where the user has authored at least
+// one comment and fetches the other-author comments on that PR. Stores
+// them with is_context=1. Idempotent + resumable: thread_fetches tracks
+// which PRs we already pulled.
+func runPullThreads(cfgPath string, args []string, force bool) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	token, err := cfg.Token()
+	if err != nil {
+		return err
+	}
+	client := gh.New(token)
+	d, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	repoFilter := ""
+	if len(args) > 0 {
+		repoFilter = args[0]
+		found := false
+		for _, r := range cfg.Repos {
+			if r.Name == repoFilter {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("repo %q not in config", repoFilter)
+		}
+	}
+
+	// Pre-build a repo→author map so we exclude the right login per repo.
+	authorBy := map[string]string{}
+	for _, r := range cfg.Repos {
+		authorBy[r.Name] = r.Author
+	}
+
+	prs, err := db.DistinctPRsWithAuthorComments(d, repoFilter)
+	if err != nil {
+		return fmt.Errorf("list prs: %w", err)
+	}
+	fmt.Printf("==> pull-threads: %d PRs to check (force=%v)\n", len(prs), force)
+
+	ctx := context.Background()
+	var totalIns, totalSkip, fetched, cached int
+	t0 := time.Now()
+	for i, p := range prs {
+		if !force && db.ThreadFetchedAt(d, p.Repo, p.Number) != "" {
+			cached++
+			continue
+		}
+		fmt.Printf("    [%d/%d] %s#%d ...", i+1, len(prs), p.Repo, p.Number)
+		comments, err := client.FetchPRThread(ctx, p.Repo, p.Number, authorBy[p.Repo])
+		if err != nil {
+			fmt.Printf(" ERR: %v\n", err)
+			continue
+		}
+		ins, skip, err := db.UpsertContextComments(d, comments)
+		if err != nil {
+			fmt.Printf(" upsert ERR: %v\n", err)
+			continue
+		}
+		if err := db.MarkThreadFetched(d, p.Repo, p.Number); err != nil {
+			log.Printf("    %s#%d: mark error: %v", p.Repo, p.Number, err)
+		}
+		totalIns += ins
+		totalSkip += skip
+		fetched++
+		fmt.Printf(" %d new, %d existed\n", ins, skip)
+		// Progress every 50 PRs.
+		if fetched%50 == 0 {
+			elapsed := time.Since(t0).Round(time.Second)
+			rate := float64(fetched) / elapsed.Seconds()
+			remaining := time.Duration(float64(len(prs)-i-1)/rate) * time.Second
+			fmt.Printf("    %d/%d (%s elapsed, ~%s remaining) — %d new context comments\n",
+				i+1, len(prs), elapsed, remaining.Round(time.Second), totalIns)
+		}
+	}
+	fmt.Printf("==> done: fetched %d PRs (%d cached), %d new context comments, %d existed\n",
+		fetched, cached, totalIns, totalSkip)
 	return nil
 }

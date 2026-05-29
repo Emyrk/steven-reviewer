@@ -632,6 +632,7 @@ type prDetailComment struct {
 	DiffHTML         template.HTML
 	Tags             []string
 	NeedsMoreContext bool
+	IsContext        bool
 }
 
 func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
@@ -649,7 +650,7 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(diff_hunk, ''), COALESCE(file_path, ''),
 		       COALESCE(pr_title, ''), created_at, status,
 		       COALESCE(decision, ''), COALESCE(routed_to, ''), COALESCE(note, ''),
-		       needs_more_context
+		       needs_more_context, is_context
 		FROM comments
 		WHERE repo = ? AND pr_number = ?
 		ORDER BY created_at ASC`, repo, num)
@@ -661,10 +662,10 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 	var comments []prDetailComment
 	for rows.Next() {
 		var c model.Comment
-		var nmc int
+		var nmc, isCtx int
 		if err := rows.Scan(&c.ID, &c.Repo, &c.PRNumber, &c.CommentType, &c.URL, &c.Author, &c.Body,
 			&c.DiffHunk, &c.FilePath, &c.PRTitle, &c.CreatedAt, &c.Status,
-			&c.Decision, &c.RoutedTo, &c.Note, &nmc); err != nil {
+			&c.Decision, &c.RoutedTo, &c.Note, &nmc, &isCtx); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -679,6 +680,7 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 			BodyHTML:         template.HTML(bbuf.String()),
 			DiffHTML:         dhtml,
 			NeedsMoreContext: nmc == 1,
+			IsContext:        isCtx == 1,
 		})
 	}
 	if len(comments) == 0 {

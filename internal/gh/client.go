@@ -352,6 +352,16 @@ func (c *Client) getPagedOnce(ctx context.Context, path string, out any) (next s
 		return "", true, fmt.Errorf("read: %w", err)
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		// GitHub returns 403 for BOTH rate-limit exhaustion AND token
+		// permission denial. The reset/limit headers are populated in
+		// both cases, so the only reliable signal is X-RateLimit-Remaining.
+		// If it's not 0, this is a permission error — fail fast, don't sleep.
+		remaining := resp.Header.Get("X-RateLimit-Remaining")
+		isRateLimit := resp.StatusCode == http.StatusTooManyRequests || remaining == "0"
+		if !isRateLimit {
+			return "", false, fmt.Errorf("HTTP %d on %s (permission denied, remaining=%s): %s",
+				resp.StatusCode, path, remaining, truncate(string(body), 300))
+		}
 		if ra := resp.Header.Get("Retry-After"); ra != "" {
 			if secs, err := strconv.Atoi(ra); err == nil {
 				select {
@@ -419,4 +429,54 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// FetchPRThread returns every issue_comment and review_comment on a
+// single PR, regardless of author. Used to gather context for the
+// conversations Emyrk participated in.
+//
+// excludeAuthor is the login whose comments should be SKIPPED (we
+// already have those from the main pull). Pass "" to keep everyone.
+func (c *Client) FetchPRThread(ctx context.Context, repo string, number int, excludeAuthor string) ([]IssueComment, error) {
+	var out []IssueComment
+
+	// Issue-level comments on PR.
+	issuePath := fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100", repo, number)
+	for issuePath != "" {
+		var page []rawComment
+		next, err := c.getPaged(ctx, issuePath, &page)
+		if err != nil {
+			return out, fmt.Errorf("issue thread: %w", err)
+		}
+		for _, r := range page {
+			if excludeAuthor != "" && strings.EqualFold(r.User.Login, excludeAuthor) {
+				continue
+			}
+			m := parseIssueComment(repo, r)
+			m.PRNumber = number
+			out = append(out, m)
+		}
+		issuePath = next
+	}
+
+	// Review (inline) comments on PR.
+	reviewPath := fmt.Sprintf("/repos/%s/pulls/%d/comments?per_page=100", repo, number)
+	for reviewPath != "" {
+		var page []rawComment
+		next, err := c.getPaged(ctx, reviewPath, &page)
+		if err != nil {
+			return out, fmt.Errorf("review thread: %w", err)
+		}
+		for _, r := range page {
+			if excludeAuthor != "" && strings.EqualFold(r.User.Login, excludeAuthor) {
+				continue
+			}
+			m := parseReviewComment(repo, r)
+			m.PRNumber = number
+			out = append(out, m)
+		}
+		reviewPath = next
+	}
+
+	return out, nil
 }

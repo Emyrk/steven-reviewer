@@ -227,3 +227,103 @@ func SaveCursor(d *sql.DB, repo, commentType, cursor string) error {
 		repo, commentType, cursor, now)
 	return err
 }
+
+// UpsertContextComments inserts (or no-op-skips) comments marked as
+// thread context. Unlike UpsertComments, these never get triage state —
+// they're read-only context for the comments you authored.
+func UpsertContextComments(d *sql.DB, comments []gh.IssueComment) (inserted, skipped int, err error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	tx, err := d.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	// INSERT OR IGNORE so we can blindly re-run pull-threads without
+	// hammering already-stored rows. status='context' makes it filterable.
+	insStmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO comments (
+			id, repo, pr_number, comment_type, url, author, body,
+			diff_hunk, file_path, created_at, fetched_at, status, is_context
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'context', 1)`)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer insStmt.Close()
+
+	for _, c := range comments {
+		res, err := insStmt.Exec(
+			c.ID, c.Repo, c.PRNumber, c.CommentType, c.URL, c.Author, c.Body,
+			nullable(c.DiffHunk), nullable(c.FilePath),
+			c.CreatedAt.UTC().Format(time.RFC3339), now,
+		)
+		if err != nil {
+			return 0, 0, fmt.Errorf("insert ctx %s: %w", c.ID, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			inserted++
+		} else {
+			skipped++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return inserted, skipped, nil
+}
+
+// MarkThreadFetched records that this PR's thread has been pulled.
+func MarkThreadFetched(d *sql.DB, repo string, number int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.Exec(`INSERT INTO thread_fetches (repo, pr_number, fetched_at)
+	                  VALUES (?, ?, ?)
+	                  ON CONFLICT(repo, pr_number) DO UPDATE SET fetched_at=excluded.fetched_at`,
+		repo, number, now)
+	return err
+}
+
+// DistinctPRsWithAuthorComments lists (repo, number) where we have at
+// least one comment authored by user (is_context=0). Used as the work
+// list for pull-threads.
+func DistinctPRsWithAuthorComments(d *sql.DB, repo string) ([]struct {
+	Repo   string
+	Number int
+}, error) {
+	q := `SELECT DISTINCT repo, pr_number FROM comments
+	      WHERE is_context = 0 AND pr_number > 0`
+	var args []any
+	if repo != "" {
+		q += " AND repo = ?"
+		args = append(args, repo)
+	}
+	q += " ORDER BY repo, pr_number"
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []struct {
+		Repo   string
+		Number int
+	}
+	for rows.Next() {
+		var r struct {
+			Repo   string
+			Number int
+		}
+		if err := rows.Scan(&r.Repo, &r.Number); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// ThreadFetchedAt returns the fetched_at timestamp for a PR, or "".
+func ThreadFetchedAt(d *sql.DB, repo string, number int) string {
+	var ts string
+	_ = d.QueryRow(`SELECT fetched_at FROM thread_fetches WHERE repo=? AND pr_number=?`,
+		repo, number).Scan(&ts)
+	return ts
+}
