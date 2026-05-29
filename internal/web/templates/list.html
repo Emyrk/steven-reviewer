@@ -1,0 +1,41 @@
+{{template "head" .}}
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <span class="text-gray-500">repo:</span>
+  <a href="/?status={{.StatusFilter}}" class="px-2 py-1 rounded {{if or (eq .RepoFilter "") (eq .RepoFilter "all")}}bg-gray-900 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">all</a>
+  {{range .Repos}}
+  <a href="/?repo={{.Repo}}&status={{$.StatusFilter}}" class="px-2 py-1 rounded {{if eq $.RepoFilter .Repo}}bg-gray-900 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">
+    {{.Repo}} <span class="opacity-60">{{.Total}}</span>
+  </a>
+  {{end}}
+</div>
+
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">status:</span>
+  {{range .Statuses}}
+  <a href="/?repo={{$.RepoFilter}}&status={{.Status}}" class="px-2 py-1 rounded {{if eq $.StatusFilter .Status}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">
+    {{.Status}} <span class="opacity-60">{{.Count}}</span>
+  </a>
+  {{end}}
+</div>
+
+<div class="text-sm text-gray-500 mb-2">showing {{.Count}} (limit {{.Limit}})</div>
+
+<div class="bg-white border border-gray-200 rounded divide-y divide-gray-100">
+{{range .Rows}}
+  <a href="/c/{{.ID}}" class="block px-4 py-3 hover:bg-gray-50">
+    <div class="flex items-baseline gap-3">
+      <span class="mono text-xs text-gray-500">{{.Repo}}#{{.PRNumber}}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded {{if eq .CommentType "review_comment"}}bg-purple-100 text-purple-800{{else}}bg-blue-100 text-blue-800{{end}}">{{.CommentType}}</span>
+      {{if .FilePath.Valid}}<span class="mono text-xs text-gray-400">{{.FilePath.String}}</span>{{end}}
+      <span class="ml-auto mono text-xs text-gray-400">{{.CreatedAt}}</span>
+    </div>
+    <div class="mt-1 text-sm text-gray-800">{{shortBody .Body}}</div>
+    {{if .Decision.Valid}}
+    <div class="mt-1 text-xs"><span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800">{{.Decision.String}}</span></div>
+    {{end}}
+  </a>
+{{else}}
+  <div class="px-4 py-8 text-center text-gray-500">no comments matching this filter</div>
+{{end}}
+</div>
+{{template "foot" .}}

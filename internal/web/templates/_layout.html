@@ -1,0 +1,40 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  pre.chroma { background: #0d1117; color: #e6edf3; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  .prose-tight p { margin: 0.5em 0; }
+  .prose-tight pre { background: #f6f8fa; padding: 8px 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+  .prose-tight code { background: #f6f8fa; padding: 1px 4px; border-radius: 4px; font-size: 0.9em; }
+  .prose-tight pre code { background: transparent; padding: 0; }
+  .prose-tight blockquote { border-left: 3px solid #d0d7de; padding-left: 10px; color: #57606a; margin: 0.5em 0; }
+  .prose-tight a { color: #0969da; text-decoration: underline; }
+  .key { display: inline-block; min-width: 1.2em; padding: 1px 5px; background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 11px; color: #374151; text-align: center; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+<header class="bg-white border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-6">
+    <a href="/" class="font-semibold text-gray-900">steven-reviewer</a>
+    <nav class="text-sm text-gray-600 flex gap-4">
+      <a href="/?status=pending" class="hover:text-gray-900">pending</a>
+      <a href="/?status=routed" class="hover:text-gray-900">routed</a>
+      <a href="/?status=skipped" class="hover:text-gray-900">skipped</a>
+      <a href="/?status=all" class="hover:text-gray-900">all</a>
+    </nav>
+  </div>
+</header>
+<main class="max-w-7xl mx-auto px-4 py-6">
+{{end}}
+
+{{define "foot"}}
+</main>
+</body>
+</html>
+{{end}}

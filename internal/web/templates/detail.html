@@ -1,0 +1,63 @@
+{{template "head" .}}
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <a href="/" class="text-gray-600 hover:text-gray-900">← list</a>
+  {{if .Prev}}<a href="/c/{{.Prev}}" class="text-gray-600 hover:text-gray-900">prev (<span class="key">k</span>)</a>{{else}}<span class="text-gray-300">prev</span>{{end}}
+  {{if .Next}}<a href="/c/{{.Next}}" class="text-gray-600 hover:text-gray-900">next (<span class="key">j</span>)</a>{{else}}<span class="text-gray-300">next</span>{{end}}
+  <a href="{{.C.URL}}" target="_blank" class="ml-auto text-blue-600 hover:underline">open on github ↗ (<span class="key">o</span>)</a>
+</div>
+
+<div class="bg-white border border-gray-200 rounded">
+  <div class="px-5 py-3 border-b border-gray-100 flex items-baseline gap-3 text-sm">
+    <span class="mono font-medium">{{.C.Repo}}#{{.C.PRNumber}}</span>
+    <span class="text-xs px-1.5 py-0.5 rounded {{if eq .C.CommentType "review_comment"}}bg-purple-100 text-purple-800{{else}}bg-blue-100 text-blue-800{{end}}">{{.C.CommentType}}</span>
+    {{if .C.FilePath}}<span class="mono text-xs text-gray-500">{{.C.FilePath}}</span>{{end}}
+    <span class="ml-auto mono text-xs text-gray-400">{{.C.CreatedAt}}</span>
+  </div>
+
+  {{if .DiffHTML}}
+  <div class="px-5 py-3 border-b border-gray-100">
+    <div class="text-xs uppercase tracking-wide text-gray-500 mb-1">diff hunk</div>
+    {{.DiffHTML}}
+  </div>
+  {{end}}
+
+  <div class="px-5 py-4 border-b border-gray-100">
+    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">your comment</div>
+    <div class="prose-tight text-sm leading-relaxed">{{.BodyHTML}}</div>
+  </div>
+
+  <form method="POST" action="/c/{{.C.ID}}/triage" class="px-5 py-4 bg-gray-50">
+    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">triage</div>
+    <div class="flex flex-wrap gap-2 mb-3">
+      {{range .Decisions}}
+        <button type="submit" name="decision" value="{{.Value}}"
+                class="px-3 py-1.5 text-sm rounded border border-gray-300 bg-white hover:bg-gray-100 hover:border-gray-400"
+                data-key="{{.Key}}">
+          <span class="key">{{.Key}}</span> {{.Value}}
+        </button>
+      {{end}}
+    </div>
+    <input name="note" placeholder="optional one-line note (why?)"
+           class="w-full text-sm px-3 py-1.5 border border-gray-300 rounded focus:outline-none focus:border-blue-500" />
+    {{if .C.Decision}}
+    <div class="mt-2 text-xs text-gray-500">
+      already triaged: <span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800">{{.C.Decision}}</span>
+      {{if .C.Note}}<span class="ml-2 text-gray-600">"{{.C.Note}}"</span>{{end}}
+    </div>
+    {{end}}
+  </form>
+</div>
+
+<script>
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'j') { {{if .Next}}window.location.href = "/c/{{.Next}}";{{end}} return; }
+    if (k === 'k') { {{if .Prev}}window.location.href = "/c/{{.Prev}}";{{end}} return; }
+    if (k === 'o') { window.open("{{.C.URL}}", "_blank"); return; }
+    const btn = document.querySelector(`button[data-key="${k}"]`);
+    if (btn) { btn.click(); }
+  });
+</script>
+{{template "foot" .}}

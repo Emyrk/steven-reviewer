@@ -12,18 +12,22 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
 
 	"github.com/Emyrk/steven-reviewer/internal/config"
 	"github.com/Emyrk/steven-reviewer/internal/db"
 	"github.com/Emyrk/steven-reviewer/internal/gh"
+	"github.com/Emyrk/steven-reviewer/internal/web"
 )
 
 var usage = `usage: ingest <subcommand> [flags]
 
 subcommands:
   pull    [repo]   pull PR/issue comments into ./ingest.db
-  walk             triage pending comments into the my-agent vault
+  walk             triage pending comments into the my-agent vault (TODO)
+  serve            launch the web viewer/triager
   status           summarize ingestion + triage state
   doctor           check config, token, and DB health
 
@@ -49,6 +53,10 @@ func main() {
 	case "walk":
 		fs.Parse(args)
 		exit(runWalk(*cfgPath, fs.Args()))
+	case "serve":
+		bind := fs.String("bind", "127.0.0.1:8080", "host:port to listen on")
+		fs.Parse(args)
+		exit(runServe(*cfgPath, *bind))
 	case "status":
 		fs.Parse(args)
 		exit(runStatus(*cfgPath))
@@ -179,7 +187,25 @@ func runPull(cfgPath string, args []string) error {
 func runWalk(cfgPath string, args []string) error {
 	_ = cfgPath
 	_ = args
-	return fmt.Errorf("walk: not implemented yet (Phase 3, next commit)")
+	return fmt.Errorf("walk: use the web viewer (`ingest serve`) for now; CLI walk-through later")
+}
+
+func runServe(cfgPath, bind string) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	d, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	srv, err := web.NewServer(d)
+	if err != nil {
+		return err
+	}
+	log.Printf("steven-reviewer viewer listening on http://%s", bind)
+	return http.ListenAndServe(bind, srv.Routes())
 }
 
 func runStatus(cfgPath string) error {
