@@ -4,9 +4,35 @@
   <a href="{{.PRURL}}" target="_blank" class="ml-auto text-blue-600 hover:underline">open on github ↗</a>
 </div>
 
-<div class="mb-4">
-  <h1 class="text-xl font-semibold">{{.Repo}}#{{.PRNumber}}</h1>
-  <p class="text-sm text-gray-500">{{len .Comments}} of your comments, in chronological order</p>
+<div class="mb-4 flex items-start gap-3">
+  <div class="flex-1 min-w-0">
+    <div class="flex items-baseline gap-2 mb-1">
+      <h1 class="mono text-sm text-gray-500">{{.Repo}}#{{.PRNumber}}</h1>
+      {{if eq .PRState "merged"}}<span class="text-xs px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">merged</span>
+      {{else if eq .PRState "closed"}}<span class="text-xs px-1.5 py-0.5 rounded bg-red-100 text-red-800">closed</span>
+      {{else if eq .PRState "open"}}<span class="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-800">open</span>{{end}}
+    </div>
+    {{if .PRTitle}}
+    <h2 class="text-xl font-semibold text-gray-900 leading-snug">{{.PRTitle}}</h2>
+    {{end}}
+    <p class="text-sm text-gray-500 mt-1">
+      {{if .PROpener}}opened by <span class="font-medium text-gray-700">{{.PROpener}}</span>{{end}}
+      {{if .PROpenedAt}}<span class="text-gray-400">·</span> {{.PROpenedAt}}{{end}}
+      <span class="text-gray-400">·</span> {{len .Comments}} of your comments, chronological
+    </p>
+  </div>
+  {{$doneAction := printf "/pr/%s/%s/%d/tag" (index (split .Repo "/") 0) (index (split .Repo "/") 1) .PRNumber}}
+  {{$isDone := false}}{{range .PRTags}}{{if eq .Tag "done"}}{{$isDone = true}}{{end}}{{end}}
+  <form method="POST" action="{{$doneAction}}">
+    <input type="hidden" name="tag" value="done">
+    {{if $isDone}}<input type="hidden" name="remove" value="1">{{end}}
+    <button type="submit"
+            title="{{if $isDone}}click to un-mark done (press D){{else}}mark this PR done — fully triaged, no more passes needed (press D){{end}}"
+            class="px-4 py-2 rounded font-medium text-sm flex items-center gap-2 whitespace-nowrap {{if $isDone}}bg-green-600 text-white hover:bg-green-700{{else}}bg-white border-2 border-green-500 text-green-700 hover:bg-green-50{{end}}">
+      {{if $isDone}}✓ DONE{{else}}mark DONE{{end}}
+      <span class="text-xs opacity-70 font-mono">D</span>
+    </button>
+  </form>
 </div>
 
 <div class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
@@ -136,26 +162,85 @@
 {{end}}
 </div>
 <script>
-  // keybinds: triage tag keys (h s p t c r k n) toggle tag on the FIRST
-  // pending comment scrolled into view; 'm' toggles needs-more-context;
-  // 'g' jumps to next pending; 'G' jumps to first pending.
-  // Buttons themselves can be clicked directly with the mouse too.
+  // keybinds operate on the "current" comment (the one nearest the top of
+  // the viewport).
+  //  - h s p t c r k n   : toggle tag
+  //  - m                 : toggle more-context
+  //  - j / k             : next / prev comment (any)
+  //  - J / K             : next / prev PENDING comment (skips routed/skipped/context)
+  //  - g                 : first PENDING comment
+  //  - G                 : last comment
+  //  - o                 : open current comment on GitHub
+  // Mouse clicks work too.
+  function allComments() {
+    return Array.from(document.querySelectorAll('[id^="c-"]'));
+  }
   function nearestComment() {
-    const els = document.querySelectorAll('[id^="c-"]');
     let best = null, bestDist = Infinity;
-    for (const el of els) {
+    for (const el of allComments()) {
       const r = el.getBoundingClientRect();
       const dist = Math.abs(r.top);
       if (dist < bestDist) { bestDist = dist; best = el; }
     }
     return best;
   }
+  function isPending(el) {
+    // pending = has the amber "pending" badge AND is not a dashed-border context card
+    if (el.classList.contains('border-dashed')) return false;
+    return !!el.querySelector('.bg-amber-100');
+  }
+  function scrollTo(el) {
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('ring-2', 'ring-blue-400');
+    setTimeout(() => el.classList.remove('ring-2', 'ring-blue-400'), 600);
+  }
+  function relative(delta, pendingOnly) {
+    const els = allComments();
+    const cur = nearestComment();
+    const idx = cur ? els.indexOf(cur) : -1;
+    const step = delta > 0 ? 1 : -1;
+    for (let i = idx + step; i >= 0 && i < els.length; i += step) {
+      if (!pendingOnly || isPending(els[i])) return els[i];
+    }
+    return null;
+  }
   document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const k = e.key.toLowerCase();
+    const raw = e.key;
+    const k = raw.toLowerCase();
+
+    // navigation first
+    if (raw === 'j') { e.preventDefault(); scrollTo(relative(+1, false)); return; }
+    if (raw === 'k') { e.preventDefault(); scrollTo(relative(-1, false)); return; }
+    if (raw === 'J') { e.preventDefault(); scrollTo(relative(+1, true));  return; }
+    if (raw === 'K') { e.preventDefault(); scrollTo(relative(-1, true));  return; }
+    if (raw === 'g') {
+      e.preventDefault();
+      const first = allComments().find(isPending);
+      scrollTo(first); return;
+    }
+    if (raw === 'G') {
+      e.preventDefault();
+      const all = allComments();
+      scrollTo(all[all.length - 1]); return;
+    }
+    // Shift+D toggles the PR-level "done" tag.
+    if (raw === 'D') {
+      e.preventDefault();
+      const btn = document.querySelector('button[title*="mark this PR done"], button[title*="un-mark done"]');
+      if (btn) btn.closest('form').requestSubmit();
+      return;
+    }
+
     const el = nearestComment();
     if (!el) return;
+    if (k === 'o') {
+      const a = el.querySelector('a[href*="github.com"]');
+      if (a) window.open(a.href, '_blank');
+      return;
+    }
     if (k === 'm') {
       const btn = el.querySelector('form[action*="/context"] button');
       if (btn) btn.click();

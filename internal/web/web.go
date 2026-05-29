@@ -530,6 +530,7 @@ type prGroup struct {
 	LastComment string
 	Types       string // comma-separated set
 	Weight      string // "skip" | "low" | "high" | "canonical" | "" (normal/unset)
+	Done        bool   // true if pr_tags has tag="done"
 }
 
 func (s *Server) queryPRGroups(repoFilter, statusFilter string, limit int) ([]prGroup, error) {
@@ -585,32 +586,49 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 	if statusFilter == "" {
 		statusFilter = "pending"
 	}
+	hideDone := r.URL.Query().Get("hide_done") != "0" // default: hide done
 	limit := 200
 	groups, err := s.queryPRGroups(repoFilter, statusFilter, limit)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	// Attach weight tag per PR.
+	// Attach weight + done tag per PR.
 	if len(groups) > 0 {
 		weights := map[string]string{}
-		wrows, werr := s.db.Query(`SELECT repo, pr_number, tag FROM pr_tags WHERE tag LIKE 'weight:%'`)
+		done := map[string]bool{}
+		wrows, werr := s.db.Query(`SELECT repo, pr_number, tag FROM pr_tags WHERE tag LIKE 'weight:%' OR tag = 'done'`)
 		if werr == nil {
 			for wrows.Next() {
-				var r string
+				var rr string
 				var n int
 				var t string
-				if wrows.Scan(&r, &n, &t) == nil {
-					weights[fmt.Sprintf("%s#%d", r, n)] = strings.TrimPrefix(t, "weight:")
+				if wrows.Scan(&rr, &n, &t) == nil {
+					key := fmt.Sprintf("%s#%d", rr, n)
+					if t == "done" {
+						done[key] = true
+					} else {
+						weights[key] = strings.TrimPrefix(t, "weight:")
+					}
 				}
 			}
 			wrows.Close()
 		}
-		for i := range groups {
-			groups[i].Weight = weights[fmt.Sprintf("%s#%d", groups[i].Repo, groups[i].PRNumber)]
+		filtered := groups[:0]
+		for _, g := range groups {
+			key := fmt.Sprintf("%s#%d", g.Repo, g.PRNumber)
+			g.Weight = weights[key]
+			g.Done = done[key]
+			if hideDone && g.Done {
+				continue
+			}
+			filtered = append(filtered, g)
 		}
+		groups = filtered
 	}
 	repos, _ := s.queryRepoCounts()
+	doneCount := 0
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pr_tags WHERE tag = 'done'`).Scan(&doneCount)
 	data := map[string]any{
 		"Title":         "PRs · steven-reviewer",
 		"Groups":        groups,
@@ -618,6 +636,8 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 		"RepoFilter":    repoFilter,
 		"StatusFilter":  statusFilter,
 		"StatusOptions": []string{"pending", "routed", "skipped", "all"},
+		"HideDone":      hideDone,
+		"DoneCount":     doneCount,
 		"Count":         len(groups),
 		"Limit":         limit,
 	}
@@ -731,14 +751,56 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+
+	// PR title: prefer prs table (canonical), fall back to first comment with a pr_title.
+	var prTitle, prOpener, prOpenedAt, prState string
+	var prMerged int
+	_ = s.db.QueryRow(`SELECT COALESCE(title,''), COALESCE(opener,''), COALESCE(created_at,''), COALESCE(state,''), merged
+	                   FROM prs WHERE repo = ? AND number = ?`, repo, num).Scan(&prTitle, &prOpener, &prOpenedAt, &prState, &prMerged)
+	if prTitle == "" {
+		for _, c := range comments {
+			if c.PRTitle != "" {
+				prTitle = c.PRTitle
+				break
+			}
+		}
+	}
+	// Lazy-fetch from GH if still missing and a client is configured.
+	if prTitle == "" && s.gh != nil {
+		cctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		if m, err := s.gh.FetchPRMeta(cctx, repo, num); err == nil {
+			prTitle, prOpener, prState = m.Title, m.Opener, m.State
+			if m.Merged {
+				prMerged = 1
+			}
+			prOpenedAt = m.CreatedAt.Format(time.RFC3339)
+			_, _ = s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, created_at, fetched_at)
+			                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			                  ON CONFLICT(repo, number) DO UPDATE SET
+			                    title=excluded.title, opener=excluded.opener, state=excluded.state,
+			                    merged=excluded.merged, created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
+				repo, num, m.Title, m.Opener, m.State, prMerged,
+				m.CreatedAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+		}
+	}
+	stateLabel := prState
+	if prMerged == 1 {
+		stateLabel = "merged"
+	}
+
 	data := map[string]any{
-		"Title":     fmt.Sprintf("%s#%d · steven-reviewer", repo, num),
-		"Repo":      repo,
-		"PRNumber":  num,
-		"PRURL":     prURL,
-		"Comments":  comments,
-		"Decisions": triageDecisions,
-		"PRTags":    prTags,
+		"Title":      fmt.Sprintf("%s#%d · steven-reviewer", repo, num),
+		"Repo":       repo,
+		"PRNumber":   num,
+		"PRURL":      prURL,
+		"PRTitle":    prTitle,
+		"PROpener":   prOpener,
+		"PROpenedAt": fmtDate(prOpenedAt),
+		"PRState":    stateLabel,
+		"Comments":   comments,
+		"Decisions":  triageDecisions,
+		"PRTags":     prTags,
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "pr_detail.html", data); err != nil {
 		http.Error(w, err.Error(), 500)
