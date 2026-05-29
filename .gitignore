@@ -4,11 +4,12 @@
 *.db-shm
 *.db-wal
 
-# secrets
+# secrets / local config
 gh-token
 .env
 .env.*
 .config/
+/config.yml
 
 # build artifacts
 bin/
