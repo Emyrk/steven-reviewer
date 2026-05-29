@@ -48,6 +48,20 @@
   {{if and (gt .MaxLines 0) (gt .MissingEnrich 0)}}
   <span class="text-xs text-amber-700 ml-2" title="run: ./bin/ingest enrich-prs">⚠ {{.MissingEnrich}} authored PRs not yet enriched (hidden)</span>
   {{end}}
+  <span class="text-gray-300 mx-2">|</span>
+  {{if .HideDone}}
+    <a href="/prs/mine?repo={{.RepoFilter}}{{if .WeightFilter}}&weight={{.WeightFilter}}{{end}}{{if gt .MaxLines 0}}&max_lines={{.MaxLines}}{{end}}&hide_done=0"
+       class="px-2 py-1 rounded bg-white border border-gray-200 hover:border-gray-400"
+       title="currently hiding {{.DoneCount}} done PRs — click to show">
+      ✓ done hidden ({{.DoneCount}})
+    </a>
+  {{else}}
+    <a href="/prs/mine?repo={{.RepoFilter}}{{if .WeightFilter}}&weight={{.WeightFilter}}{{end}}{{if gt .MaxLines 0}}&max_lines={{.MaxLines}}{{end}}"
+       class="px-2 py-1 rounded bg-green-600 text-white"
+       title="currently including done — click to hide">
+      ✓ showing done
+    </a>
+  {{end}}
 </div>
 
 <div class="text-sm text-gray-500 mb-2">{{.Count}} PRs ({{.TotalAuthored}} authored total in cache)</div>

@@ -1304,6 +1304,7 @@ type minePR struct {
 func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 	repoFilter := r.URL.Query().Get("repo")
 	weightFilter := r.URL.Query().Get("weight") // e.g. "canonical", "like", "skip", ""
+	hideDone := r.URL.Query().Get("hide_done") != "0" // default: hide done
 	maxLines := 0
 	if v := r.URL.Query().Get("max_lines"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -1384,12 +1385,27 @@ func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
+		if hideDone {
+			isDone := false
+			for _, t := range p.Tags {
+				if t == "done" {
+					isDone = true
+					break
+				}
+			}
+			if isDone {
+				continue
+			}
+		}
 		filtered = append(filtered, p)
 	}
 
 	repos, _ := s.queryRepoCounts()
 	missingEnrich := 0
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE authored_by_me = 1 AND (additions IS NULL OR additions = 0)`).Scan(&missingEnrich)
+	// Count done authored PRs (for the chip).
+	doneCount := 0
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pr_tags pt JOIN prs p ON p.repo = pt.repo AND p.number = pt.pr_number WHERE pt.tag = 'done' AND p.authored_by_me = 1`).Scan(&doneCount)
 	data := map[string]any{
 		"Title":          "my PRs · steven-reviewer",
 		"PRs":            filtered,
@@ -1398,6 +1414,8 @@ func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
 		"MaxLines":       maxLines,
 		"MaxLinesOpts":   []int{50, 100, 200, 400, 800},
 		"MissingEnrich":  missingEnrich,
+		"HideDone":       hideDone,
+		"DoneCount":      doneCount,
 		"WeightFilter":   weightFilter,
 		"WeightOptions":  []string{"", "canonical", "high", "normal", "low", "skip"},
 		"Count":          len(filtered),
