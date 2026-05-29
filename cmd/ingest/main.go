@@ -118,7 +118,7 @@ func runPull(cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	_ = gh.New(token) // wire-up smoke
+	client := gh.New(token)
 
 	d, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -141,12 +141,37 @@ func runPull(cfgPath string, args []string) error {
 		}
 	}
 
+	ctx := context.Background()
 	for _, r := range repos {
 		fmt.Printf("==> pull %s (author=%s)\n", r.Name, r.Author)
-		// TODO: loop client.FetchCommentsByAuthor with cursor pagination,
-		// upsert into comments table, advance cursor row. Wired in the
-		// next commit alongside the real GraphQL query.
-		fmt.Printf("    (fetch not yet implemented; see internal/gh/client.go TODO)\n")
+		for _, kind := range []struct {
+			label string
+			fn    func(context.Context, string, string, string) ([]gh.IssueComment, string, error)
+		}{
+			{"issue_comment", client.FetchIssueComments},
+			{"review_comment", client.FetchReviewComments},
+		} {
+			since, err := db.Cursor(d, r.Name, kind.label)
+			if err != nil {
+				return fmt.Errorf("cursor %s/%s: %w", r.Name, kind.label, err)
+			}
+			fmt.Printf("    %-15s since=%q ... ", kind.label, since)
+			comments, nextSince, err := kind.fn(ctx, r.Name, r.Author, since)
+			if err != nil {
+				return fmt.Errorf("fetch %s/%s: %w", r.Name, kind.label, err)
+			}
+			ins, upd, err := db.UpsertComments(d, comments)
+			if err != nil {
+				return fmt.Errorf("upsert %s/%s: %w", r.Name, kind.label, err)
+			}
+			if nextSince != since && nextSince != "" {
+				if err := db.SaveCursor(d, r.Name, kind.label, nextSince); err != nil {
+					return fmt.Errorf("save cursor %s/%s: %w", r.Name, kind.label, err)
+				}
+			}
+			fmt.Printf("%d matched, %d new, %d updated, cursor=%s\n",
+				len(comments), ins, upd, nextSince)
+		}
 	}
 	return nil
 }
