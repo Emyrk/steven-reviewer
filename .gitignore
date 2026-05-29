@@ -1,0 +1,22 @@
+# sqlite databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# secrets
+gh-token
+.env
+.env.*
+.config/
+
+# build artifacts
+bin/
+dist/
+
+# editor/OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
