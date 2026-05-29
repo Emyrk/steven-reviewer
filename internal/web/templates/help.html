@@ -10,6 +10,13 @@ to the vault &mdash; that's a separate bulk step (<code>ingest synthesize</code>
 so we can review what we're about to land before committing.
 </p>
 
+<p class="text-sm text-gray-600 mb-4">
+<strong>A comment can have multiple tags.</strong> Clicking the same key
+twice removes the tag. Mixing tags is encouraged where it fits
+(e.g. <code>tradeoff</code> + <code>style</code> when a code-pattern is
+shown alongside its rationale).
+</p>
+
 <table class="w-full text-sm border border-gray-200 rounded bg-white">
   <thead class="bg-gray-50 border-b border-gray-200">
     <tr><th class="text-left px-3 py-2 w-12">key</th><th class="text-left px-3 py-2 w-32">decision</th><th class="text-left px-3 py-2">meaning</th></tr>
@@ -55,8 +62,28 @@ so we can review what we're about to land before committing.
       <td class="px-3 py-3 font-medium">needs-thought</td>
       <td class="px-3 py-3 text-gray-700">Come back to this. Doesn't get synthesized.</td>
     </tr>
+    <tr class="bg-orange-50">
+      <td class="px-3 py-3"><span class="key">m</span></td>
+      <td class="px-3 py-3 font-medium">more-context</td>
+      <td class="px-3 py-3 text-gray-700">Not a triage decision &mdash; a metadata flag. Marks comments where the diff_hunk is not enough (related code spans multiple files). The future PR-diff enrichment will prioritize fetching the full diff for these.</td>
+    </tr>
   </tbody>
 </table>
+
+<h2 class="text-lg font-semibold mt-8 mb-2">PR-level tags</h2>
+<p class="text-sm text-gray-600 mb-2">
+On the PR detail page you can tag the whole PR (not a specific comment)
+with free-form labels. Useful when the final code shape matters as much
+as the individual review notes.
+</p>
+<ul class="list-disc list-inside text-sm text-gray-700 space-y-1 mb-3">
+  <li><code>rocks</code> &mdash; this PR rocks; the final result is exemplary</li>
+  <li><code>canonical</code> &mdash; the canonical example of pattern X in the codebase</li>
+  <li><code>reread</code> &mdash; come back to this with full attention</li>
+  <li><code>authored-by-me</code> &mdash; I wrote this one; signal differs from PRs I reviewed</li>
+  <li><code>antipattern</code> &mdash; whole-PR example of something to flag in future reviews</li>
+  <li>&hellip;or any other label you find useful. There's no fixed vocabulary.</li>
+</ul>
 
 <h2 class="text-lg font-semibold mt-8 mb-2">Other keys</h2>
 <table class="w-full text-sm border border-gray-200 rounded bg-white">

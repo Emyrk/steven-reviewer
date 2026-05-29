@@ -70,8 +70,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleList)
 	mux.HandleFunc("GET /prs", s.handlePRList)
 	mux.HandleFunc("GET /pr/{repo_owner}/{repo_name}/{number}", s.handlePRDetail)
+	mux.HandleFunc("POST /pr/{repo_owner}/{repo_name}/{number}/tag", s.handlePRTag)
 	mux.HandleFunc("GET /c/{id}", s.handleDetail)
 	mux.HandleFunc("POST /c/{id}/triage", s.handleTriage)
+	mux.HandleFunc("POST /c/{id}/context", s.handleContext)
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /api/comments", s.handleAPIList)
 
@@ -312,27 +314,35 @@ func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad decision", 400)
 		return
 	}
-	status := "routed"
-	if decision == "skip" {
-		status = "skipped"
-	} else if decision == "needs-thought" {
-		status = "needs-thought"
-	}
-	_, err := s.db.Exec(`
-		UPDATE comments
-		SET status = ?, decision = ?, note = NULLIF(?, ''),
-		    triaged_at = datetime('now')
-		WHERE id = ?`, status, decision, note, id)
+	// Toggle in comment_tags. If the tag already exists, remove it.
+	// Otherwise add it.
+	var existing int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM comment_tags WHERE comment_id = ? AND tag = ?`, id, decision).Scan(&existing)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	// Explicit redirect from form (PR detail keeps you on the same page).
+	if existing > 0 {
+		if _, err := s.db.Exec(`DELETE FROM comment_tags WHERE comment_id = ? AND tag = ?`, id, decision); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	} else {
+		if _, err := s.db.Exec(`INSERT INTO comment_tags (comment_id, tag, added_at) VALUES (?, ?, datetime('now'))`, id, decision); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	// Recompute status + canonical decision from the tag set.
+	if err := s.recomputeStatus(id, note); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	if redirectTo != "" && strings.HasPrefix(redirectTo, "/") {
 		http.Redirect(w, r, redirectTo, http.StatusSeeOther)
 		return
 	}
-	// Otherwise, advance to the next pending in the same repo (flat list flow).
 	var repo, createdAt string
 	_ = s.db.QueryRow(`SELECT repo, created_at FROM comments WHERE id = ?`, id).Scan(&repo, &createdAt)
 	var nextID string
@@ -345,6 +355,126 @@ func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/?repo="+repo+"&status=pending", http.StatusSeeOther)
+}
+
+// recomputeStatus derives status + decision from the current comment_tags
+// set. Priority: any decision tag -> routed; only skip -> skipped; only
+// needs-thought -> needs-thought; no tags -> pending. The single
+// `decision` column gets the first non-skip/non-needs-thought tag for
+// backwards compatibility.
+func (s *Server) recomputeStatus(id, note string) error {
+	rows, err := s.db.Query(`SELECT tag FROM comment_tags WHERE comment_id = ? ORDER BY added_at`, id)
+	if err != nil {
+		return err
+	}
+	var tags []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			rows.Close()
+			return err
+		}
+		tags = append(tags, t)
+	}
+	rows.Close()
+
+	var status, decision string
+	switch {
+	case len(tags) == 0:
+		status = "pending"
+	case len(tags) == 1 && tags[0] == "skip":
+		status = "skipped"
+		decision = "skip"
+	case len(tags) == 1 && tags[0] == "needs-thought":
+		status = "needs-thought"
+		decision = "needs-thought"
+	default:
+		status = "routed"
+		for _, t := range tags {
+			if t != "skip" && t != "needs-thought" {
+				decision = t
+				break
+			}
+		}
+		if decision == "" {
+			decision = tags[0]
+		}
+	}
+	var nullDec any = decision
+	if decision == "" {
+		nullDec = nil
+	}
+	noteUpdate := ""
+	if note != "" {
+		noteUpdate = ", note = ?"
+	}
+	q := `UPDATE comments SET status = ?, decision = ?, triaged_at = datetime('now')` + noteUpdate + ` WHERE id = ?`
+	args := []any{status, nullDec}
+	if note != "" {
+		args = append(args, note)
+	}
+	args = append(args, id)
+	_, err = s.db.Exec(q, args...)
+	return err
+}
+
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	redirectTo := r.FormValue("redirect_to")
+	// Toggle the flag.
+	var cur int
+	_ = s.db.QueryRow(`SELECT needs_more_context FROM comments WHERE id = ?`, id).Scan(&cur)
+	next := 1 - cur
+	if _, err := s.db.Exec(`UPDATE comments SET needs_more_context = ? WHERE id = ?`, next, id); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if redirectTo != "" && strings.HasPrefix(redirectTo, "/") {
+		http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/c/"+id, http.StatusSeeOther)
+}
+
+func (s *Server) handlePRTag(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("repo_owner")
+	name := r.PathValue("repo_name")
+	repo := owner + "/" + name
+	numStr := r.PathValue("number")
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		http.Error(w, "bad pr number", 400)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	tag := strings.TrimSpace(r.FormValue("tag"))
+	note := strings.TrimSpace(r.FormValue("note"))
+	remove := r.FormValue("remove")
+	if tag == "" {
+		http.Error(w, "tag required", 400)
+		return
+	}
+	if remove != "" {
+		_, _ = s.db.Exec(`DELETE FROM pr_tags WHERE repo = ? AND pr_number = ? AND tag = ?`, repo, num, tag)
+	} else {
+		_, err = s.db.Exec(`
+			INSERT INTO pr_tags (repo, pr_number, tag, note, added_at)
+			VALUES (?, ?, ?, NULLIF(?, ''), datetime('now'))
+			ON CONFLICT(repo, pr_number, tag) DO UPDATE SET note = excluded.note, added_at = datetime('now')`,
+			repo, num, tag, note)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	http.Redirect(w, r, fmt.Sprintf("/pr/%s/%s/%d", owner, name, num), http.StatusSeeOther)
 }
 
 func (s *Server) handleAPIList(w http.ResponseWriter, r *http.Request) {
@@ -456,8 +586,10 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 
 type prDetailComment struct {
 	model.Comment
-	BodyHTML template.HTML
-	DiffHTML template.HTML
+	BodyHTML         template.HTML
+	DiffHTML         template.HTML
+	Tags             []string
+	NeedsMoreContext bool
 }
 
 func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
@@ -474,7 +606,8 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 		SELECT id, repo, pr_number, comment_type, url, author, body,
 		       COALESCE(diff_hunk, ''), COALESCE(file_path, ''),
 		       COALESCE(pr_title, ''), created_at, status,
-		       COALESCE(decision, ''), COALESCE(routed_to, ''), COALESCE(note, '')
+		       COALESCE(decision, ''), COALESCE(routed_to, ''), COALESCE(note, ''),
+		       needs_more_context
 		FROM comments
 		WHERE repo = ? AND pr_number = ?
 		ORDER BY created_at ASC`, repo, num)
@@ -486,9 +619,10 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 	var comments []prDetailComment
 	for rows.Next() {
 		var c model.Comment
+		var nmc int
 		if err := rows.Scan(&c.ID, &c.Repo, &c.PRNumber, &c.CommentType, &c.URL, &c.Author, &c.Body,
 			&c.DiffHunk, &c.FilePath, &c.PRTitle, &c.CreatedAt, &c.Status,
-			&c.Decision, &c.RoutedTo, &c.Note); err != nil {
+			&c.Decision, &c.RoutedTo, &c.Note, &nmc); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -499,17 +633,54 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 			dhtml = template.HTML(highlightDiff(c.DiffHunk))
 		}
 		comments = append(comments, prDetailComment{
-			Comment:  c,
-			BodyHTML: template.HTML(bbuf.String()),
-			DiffHTML: dhtml,
+			Comment:          c,
+			BodyHTML:         template.HTML(bbuf.String()),
+			DiffHTML:         dhtml,
+			NeedsMoreContext: nmc == 1,
 		})
 	}
 	if len(comments) == 0 {
 		http.NotFound(w, r)
 		return
 	}
+	// Load tags per comment (one query, then bucketed).
+	tagMap := map[string][]string{}
+	tagRows, err := s.db.Query(`
+		SELECT ct.comment_id, ct.tag
+		FROM comment_tags ct
+		JOIN comments c ON c.id = ct.comment_id
+		WHERE c.repo = ? AND c.pr_number = ?
+		ORDER BY ct.added_at`, repo, num)
+	if err == nil {
+		for tagRows.Next() {
+			var cid, tag string
+			if err := tagRows.Scan(&cid, &tag); err == nil {
+				tagMap[cid] = append(tagMap[cid], tag)
+			}
+		}
+		tagRows.Close()
+	}
+	for i := range comments {
+		comments[i].Tags = tagMap[comments[i].ID]
+	}
+	// Load PR-level tags.
+	type prTag struct {
+		Tag  string
+		Note string
+	}
+	var prTags []prTag
+	ptRows, err := s.db.Query(`SELECT tag, COALESCE(note, '') FROM pr_tags WHERE repo = ? AND pr_number = ? ORDER BY added_at`, repo, num)
+	if err == nil {
+		for ptRows.Next() {
+			var t prTag
+			if err := ptRows.Scan(&t.Tag, &t.Note); err == nil {
+				prTags = append(prTags, t)
+			}
+		}
+		ptRows.Close()
+	}
+
 	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", repo, num)
-	// best-effort: if any comment URL says /issues/ we treat as issue
 	for _, c := range comments {
 		if strings.Contains(c.URL, "/issues/") {
 			prURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, num)
@@ -523,6 +694,7 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 		"PRURL":     prURL,
 		"Comments":  comments,
 		"Decisions": triageDecisions,
+		"PRTags":    prTags,
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "pr_detail.html", data); err != nil {
 		http.Error(w, err.Error(), 500)

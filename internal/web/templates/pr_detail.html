@@ -9,6 +9,29 @@
   <p class="text-sm text-gray-500">{{len .Comments}} of your comments, in chronological order</p>
 </div>
 
+<div class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded">
+  <div class="text-xs uppercase tracking-wide text-gray-600 mb-1">PR-level tags</div>
+  <div class="flex flex-wrap gap-1.5 mb-2">
+    {{range .PRTags}}
+    <form method="POST" action="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}/tag" class="inline">
+      <input type="hidden" name="tag" value="{{.Tag}}">
+      <input type="hidden" name="remove" value="1">
+      <button type="submit" class="px-2 py-0.5 text-xs rounded bg-yellow-200 text-yellow-900 hover:bg-red-200" title="click to remove. {{if .Note}}note: {{.Note}}{{end}}">
+        {{.Tag}}{{if .Note}} <span class="italic opacity-70">"{{.Note}}"</span>{{end}} ×
+      </button>
+    </form>
+    {{end}}
+  </div>
+  <form method="POST" action="/pr/{{(index (split .Repo "/") 0)}}/{{(index (split .Repo "/") 1)}}/{{.PRNumber}}/tag" class="flex gap-2">
+    <input name="tag" placeholder="tag (e.g. rocks, canonical, reread, authored)"
+           class="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500 w-56">
+    <input name="note" placeholder="optional note"
+           class="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500 flex-1">
+    <button type="submit" class="text-xs px-3 py-1 rounded bg-yellow-600 text-white hover:bg-yellow-700">tag PR</button>
+  </form>
+  <div class="mt-1 text-xs text-gray-500">examples: <code>rocks</code>, <code>canonical</code>, <code>reread</code>, <code>authored-by-me</code>, <code>antipattern</code></div>
+</div>
+
 <details class="mb-4 text-xs text-gray-600 bg-blue-50 border border-blue-100 rounded">
   <summary class="px-3 py-2 cursor-pointer hover:bg-blue-100">triage legend &mdash; <a href="/help" class="text-blue-700 underline">full reference</a></summary>
   <div class="px-3 pb-3 grid grid-cols-2 gap-x-6 gap-y-1">
@@ -20,16 +43,19 @@
     <div><span class="key">r</span> <strong>praise</strong> &mdash; good pattern, voice sample</div>
     <div><span class="key">k</span> <strong>skip</strong> &mdash; noise / not training data</div>
     <div><span class="key">n</span> <strong>needs-thought</strong> &mdash; come back later</div>
+    <div class="col-span-2 pt-1 border-t border-blue-200 mt-1"><span class="key">m</span> <strong>more-context</strong> &mdash; the diff_hunk isn't enough, fetch the full PR diff for this one</div>
   </div>
+  <div class="px-3 pb-3 pt-1 text-gray-600 italic">Tags toggle: clicking the same key again removes it. Multiple tags per comment is fine and encouraged where it fits.</div>
 </details>
 
 <div class="space-y-4">
 {{range $i, $c := .Comments}}
-<div class="bg-white border border-gray-200 rounded" id="c-{{$c.ID}}">
+<div class="bg-white border border-gray-200 rounded {{if $c.NeedsMoreContext}}ring-2 ring-orange-300{{end}}" id="c-{{$c.ID}}">
   <div class="px-4 py-2 border-b border-gray-100 flex items-baseline gap-3 text-sm">
     <span class="mono text-xs text-gray-500">#{{add $i 1}}</span>
     <span class="text-xs px-1.5 py-0.5 rounded {{if eq $c.CommentType "review_comment"}}bg-purple-100 text-purple-800{{else}}bg-blue-100 text-blue-800{{end}}">{{$c.CommentType}}</span>
     {{if $c.FilePath}}<span class="mono text-xs text-gray-500">{{$c.FilePath}}</span>{{end}}
+    {{if $c.NeedsMoreContext}}<span class="text-xs px-1.5 py-0.5 rounded bg-orange-100 text-orange-800" title="more context requested">⊕ more-context</span>{{end}}
     <span class="ml-auto mono text-xs text-gray-400">{{$c.CreatedAt}}</span>
     <a href="{{$c.URL}}" target="_blank" class="text-xs text-blue-600 hover:underline">github ↗</a>
   </div>
@@ -45,28 +71,75 @@
     <div class="prose-tight text-sm leading-relaxed">{{$c.BodyHTML}}</div>
   </div>
 
-  <form method="POST" action="/c/{{$c.ID}}/triage" class="px-4 py-3 bg-gray-50">
-    <div class="flex flex-wrap gap-1.5 items-center">
+  <div class="px-4 py-3 bg-gray-50">
+    <div class="flex flex-wrap gap-1.5 items-center mb-2">
       <span class="text-xs uppercase tracking-wide text-gray-500 mr-2">triage:</span>
       {{range $.Decisions}}
-        <button type="submit" name="decision" value="{{.Value}}"
-                title="{{.Desc}}"
-                class="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-100 hover:border-gray-400">
-          <span class="key">{{.Key}}</span> {{.Value}}
+        {{$active := false}}
+        {{range $c.Tags}}{{if eq . $.Decisions}}{{end}}{{end}}
+        {{$tag := .Value}}
+        {{$isActive := false}}
+        {{range $c.Tags}}{{if eq . $tag}}{{$isActive = true}}{{end}}{{end}}
+        <form method="POST" action="/c/{{$c.ID}}/triage" class="inline">
+          <input type="hidden" name="decision" value="{{.Value}}">
+          <input type="hidden" name="redirect_to" value="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}#c-{{$c.ID}}">
+          <button type="submit" title="{{.Desc}}"
+                  class="px-2 py-1 text-xs rounded border {{if $isActive}}bg-green-100 border-green-400 text-green-900{{else}}bg-white border-gray-300 hover:bg-gray-100 hover:border-gray-400{{end}}">
+            <span class="key">{{.Key}}</span> {{.Value}}{{if $isActive}} ✓{{end}}
+          </button>
+        </form>
+      {{end}}
+      <form method="POST" action="/c/{{$c.ID}}/context" class="inline">
+        <input type="hidden" name="redirect_to" value="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}#c-{{$c.ID}}">
+        <button type="submit" title="diff_hunk isn't enough; fetch full PR diff later"
+                class="px-2 py-1 text-xs rounded border {{if $c.NeedsMoreContext}}bg-orange-100 border-orange-400 text-orange-900{{else}}bg-white border-gray-300 hover:bg-gray-100 hover:border-gray-400{{end}}">
+          <span class="key">m</span> more-context{{if $c.NeedsMoreContext}} ✓{{end}}
         </button>
-      {{end}}
-      {{if $c.Decision}}
-      <span class="ml-2 px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-800">{{$c.Decision}}</span>
-      {{if $c.Note}}<span class="text-xs text-gray-600 italic">"{{$c.Note}}"</span>{{end}}
-      {{else}}
-      <span class="ml-2 px-1.5 py-0.5 text-xs rounded bg-amber-100 text-amber-800">pending</span>
-      {{end}}
+      </form>
     </div>
-    <input name="note" placeholder="optional one-line note"
-           class="mt-2 w-full text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500" />
-    <input type="hidden" name="redirect_to" value="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}#c-{{$c.ID}}" />
-  </form>
+    {{if $c.Tags}}
+    <div class="text-xs text-gray-600 mb-1">
+      tagged: {{range $c.Tags}}<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800 mr-1">{{.}}</span>{{end}}
+      {{if $c.Note}}<span class="ml-2 italic">"{{$c.Note}}"</span>{{end}}
+    </div>
+    {{else}}
+    <div class="text-xs"><span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">pending</span></div>
+    {{end}}
+  </div>
 </div>
 {{end}}
 </div>
+<script>
+  // keybinds: triage tag keys (h s p t c r k n) toggle tag on the FIRST
+  // pending comment scrolled into view; 'm' toggles needs-more-context;
+  // 'g' jumps to next pending; 'G' jumps to first pending.
+  // Buttons themselves can be clicked directly with the mouse too.
+  function nearestComment() {
+    const els = document.querySelectorAll('[id^="c-"]');
+    let best = null, bestDist = Infinity;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      const dist = Math.abs(r.top);
+      if (dist < bestDist) { bestDist = dist; best = el; }
+    }
+    return best;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    const el = nearestComment();
+    if (!el) return;
+    if (k === 'm') {
+      const btn = el.querySelector('form[action*="/context"] button');
+      if (btn) btn.click();
+      return;
+    }
+    const valueMap = { h: 'hard', s: 'soft', p: 'personal', t: 'tradeoff', c: 'style', r: 'praise', k: 'skip', n: 'needs-thought' };
+    if (valueMap[k]) {
+      const btn = el.querySelector(`form input[value="${valueMap[k]}"]`);
+      if (btn) btn.closest('form').requestSubmit();
+    }
+  });
+</script>
 {{template "foot" .}}
