@@ -1,0 +1,78 @@
+{{template "head" .}}
+<div class="max-w-3xl">
+<h1 class="text-xl font-semibold mb-4">Triage legend</h1>
+
+<p class="text-sm text-gray-600 mb-4">
+Each comment in the corpus is one of Steven's past reviews. Triage tags
+it for what kind of signal it carries, so the persona compiler can
+weight or route it correctly. Triage <em>does not</em> immediately write
+to the vault &mdash; that's a separate bulk step (<code>ingest synthesize</code>)
+so we can review what we're about to land before committing.
+</p>
+
+<table class="w-full text-sm border border-gray-200 rounded bg-white">
+  <thead class="bg-gray-50 border-b border-gray-200">
+    <tr><th class="text-left px-3 py-2 w-12">key</th><th class="text-left px-3 py-2 w-32">decision</th><th class="text-left px-3 py-2">meaning</th></tr>
+  </thead>
+  <tbody class="divide-y divide-gray-100">
+    <tr>
+      <td class="px-3 py-3"><span class="key">h</span></td>
+      <td class="px-3 py-3 font-medium">hard</td>
+      <td class="px-3 py-3 text-gray-700">Blocking rule. The bot <strong>must always flag</strong> this pattern. Example: "should check capability not role."</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">s</span></td>
+      <td class="px-3 py-3 font-medium">soft</td>
+      <td class="px-3 py-3 text-gray-700">Preference. Bot mentions if relevant but doesn't block. Example: "prefer X over Y here."</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">p</span></td>
+      <td class="px-3 py-3 font-medium">personal</td>
+      <td class="px-3 py-3 text-gray-700">My taste; I won't push back if the author disagrees. Bot suggests gently or stays silent.</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">t</span></td>
+      <td class="px-3 py-3 font-medium">tradeoff</td>
+      <td class="px-3 py-3 text-gray-700">Explains why something is the way it is. Documents rationale; doesn't enforce a rule. Feeds <code>tradeoffs/</code>.</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">c</span></td>
+      <td class="px-3 py-3 font-medium">style</td>
+      <td class="px-3 py-3 text-gray-700">Concrete code-pattern example (good or bad) for the <code>style/</code> tree.</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">r</span></td>
+      <td class="px-3 py-3 font-medium">praise</td>
+      <td class="px-3 py-3 text-gray-700">✓ Good pattern. Voice sample for "how Steven praises" + positive example.</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">k</span></td>
+      <td class="px-3 py-3 font-medium">skip</td>
+      <td class="px-3 py-3 text-gray-700">Noise. LGTM, "thanks", merge-conflict chatter, customer support. Not training data.</td>
+    </tr>
+    <tr>
+      <td class="px-3 py-3"><span class="key">n</span></td>
+      <td class="px-3 py-3 font-medium">needs-thought</td>
+      <td class="px-3 py-3 text-gray-700">Come back to this. Doesn't get synthesized.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 class="text-lg font-semibold mt-8 mb-2">Other keys</h2>
+<table class="w-full text-sm border border-gray-200 rounded bg-white">
+  <tbody class="divide-y divide-gray-100">
+    <tr><td class="px-3 py-2 w-12"><span class="key">j</span></td><td class="px-3 py-2">next pending comment (flat-list view)</td></tr>
+    <tr><td class="px-3 py-2"><span class="key">k</span></td><td class="px-3 py-2">previous pending comment (flat-list view, conflicts with skip on the PR-detail page)</td></tr>
+    <tr><td class="px-3 py-2"><span class="key">o</span></td><td class="px-3 py-2">open the comment on github</td></tr>
+  </tbody>
+</table>
+
+<h2 class="text-lg font-semibold mt-8 mb-2">Synthesis lifecycle</h2>
+<ol class="list-decimal list-inside text-sm text-gray-700 space-y-1">
+  <li><strong>pending</strong> &rarr; you triage with one of the 8 keys above.</li>
+  <li>Triage sets <code>status</code>, <code>decision</code>, and an optional <code>note</code>. Nothing else happens yet.</li>
+  <li>Later (whenever you're done triaging a batch), <code>ingest synthesize</code> reads everything with a <code>decision</code> set and <code>synthesized=0</code>, writes the appropriate vault entries in <code>my-agent</code> under <code>agent/vault/projects/steven-reviewer/</code>, and flips <code>synthesized=1</code>.</li>
+  <li>Synthesis is idempotent; rerunning processes only the not-yet-synthesized rows.</li>
+</ol>
+</div>
+{{template "foot" .}}

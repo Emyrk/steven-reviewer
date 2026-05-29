@@ -9,6 +9,20 @@
   <p class="text-sm text-gray-500">{{len .Comments}} of your comments, in chronological order</p>
 </div>
 
+<details class="mb-4 text-xs text-gray-600 bg-blue-50 border border-blue-100 rounded">
+  <summary class="px-3 py-2 cursor-pointer hover:bg-blue-100">triage legend &mdash; <a href="/help" class="text-blue-700 underline">full reference</a></summary>
+  <div class="px-3 pb-3 grid grid-cols-2 gap-x-6 gap-y-1">
+    <div><span class="key">h</span> <strong>hard</strong> &mdash; blocking rule, always flag</div>
+    <div><span class="key">s</span> <strong>soft</strong> &mdash; preference, mention if relevant</div>
+    <div><span class="key">p</span> <strong>personal</strong> &mdash; my taste, won't push</div>
+    <div><span class="key">t</span> <strong>tradeoff</strong> &mdash; explains the why; no rule</div>
+    <div><span class="key">c</span> <strong>style</strong> &mdash; concrete code pattern</div>
+    <div><span class="key">r</span> <strong>praise</strong> &mdash; good pattern, voice sample</div>
+    <div><span class="key">k</span> <strong>skip</strong> &mdash; noise / not training data</div>
+    <div><span class="key">n</span> <strong>needs-thought</strong> &mdash; come back later</div>
+  </div>
+</details>
+
 <div class="space-y-4">
 {{range $i, $c := .Comments}}
 <div class="bg-white border border-gray-200 rounded" id="c-{{$c.ID}}">
@@ -36,6 +50,7 @@
       <span class="text-xs uppercase tracking-wide text-gray-500 mr-2">triage:</span>
       {{range $.Decisions}}
         <button type="submit" name="decision" value="{{.Value}}"
+                title="{{.Desc}}"
                 class="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-100 hover:border-gray-400">
           <span class="key">{{.Key}}</span> {{.Value}}
         </button>

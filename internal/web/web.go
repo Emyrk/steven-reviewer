@@ -72,10 +72,18 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /pr/{repo_owner}/{repo_name}/{number}", s.handlePRDetail)
 	mux.HandleFunc("GET /c/{id}", s.handleDetail)
 	mux.HandleFunc("POST /c/{id}/triage", s.handleTriage)
+	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /api/comments", s.handleAPIList)
 
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
+}
+
+func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{"Title": "help · steven-reviewer"}
+	if err := s.tmpl.ExecuteTemplate(w, "help.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
 }
 
 type listRow struct {
@@ -175,19 +183,20 @@ func (s *Server) queryStatusCounts(repoFilter string) ([]statusCount, error) {
 
 // decision is one row in the triage button grid.
 type decision struct {
-	Key   string
+	Key  string
 	Value string
+	Desc string
 }
 
 var triageDecisions = []decision{
-	{"h", "hard"},
-	{"s", "soft"},
-	{"p", "personal"},
-	{"t", "tradeoff"},
-	{"c", "style"},
-	{"r", "praise"},
-	{"k", "skip"},
-	{"n", "needs-thought"},
+	{"h", "hard", "blocking rule, always flag"},
+	{"s", "soft", "preference, mention if relevant"},
+	{"p", "personal", "my taste, won't push"},
+	{"t", "tradeoff", "explains the why; no rule"},
+	{"c", "style", "concrete code pattern"},
+	{"r", "praise", "good pattern, voice sample"},
+	{"k", "skip", "noise / not training data"},
+	{"n", "needs-thought", "come back later"},
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
