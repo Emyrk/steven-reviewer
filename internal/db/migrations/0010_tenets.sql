@@ -4,7 +4,7 @@
 
 CREATE TABLE tenets (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    category    TEXT NOT NULL, -- backend | security | api | frontend | operations | testing | architecture | style | process | voice
+    category    TEXT NOT NULL, -- backend | database | security | api | frontend | operations | testing | architecture | style | process | voice
     name        TEXT NOT NULL,
     statement   TEXT NOT NULL,
     rationale   TEXT NOT NULL,

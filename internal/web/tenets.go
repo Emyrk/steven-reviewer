@@ -35,7 +35,7 @@ type Tenet struct {
 }
 
 var validTenetCategories = map[string]bool{
-	"backend": true, "security": true, "api": true, "frontend": true,
+	"backend": true, "database": true, "security": true, "api": true, "frontend": true,
 	"operations": true, "testing": true, "architecture": true,
 	"style": true, "process": true, "voice": true,
 }
@@ -48,6 +48,7 @@ Return 5-12 tenets that are reinforced by the provided database excerpts. Output
 
 Allowed categories:
 - backend
+- database
 - security
 - api
 - frontend
@@ -126,17 +127,68 @@ func (s *Server) gatherTenetContext(ctx context.Context) (string, error) {
 		sb.WriteString("No accepted lessons yet.\n\n")
 	}
 
-	sb.WriteString("# High-signal curated comments\n\n")
+	sb.WriteString("# Whole GitHub corpus summary\n\n")
+	if rrows, err := s.db.QueryContext(ctx, `
+		SELECT repo, status, is_context, COUNT(*)
+		FROM comments
+		GROUP BY repo, status, is_context
+		ORDER BY repo, status, is_context`); err == nil {
+		defer rrows.Close()
+		for rrows.Next() {
+			var repo, status string
+			var isContext, count int
+			if rrows.Scan(&repo, &status, &isContext, &count) == nil {
+				fmt.Fprintf(&sb, "- %s status=%s is_context=%d count=%d\n", repo, status, isContext, count)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	if prows, err := s.db.QueryContext(ctx, `
+		SELECT repo, COUNT(*), COALESCE(SUM(authored_by_me),0)
+		FROM prs
+		GROUP BY repo
+		ORDER BY repo`); err == nil {
+		defer prows.Close()
+		for prows.Next() {
+			var repo string
+			var total, authored int
+			if prows.Scan(&repo, &total, &authored) == nil {
+				fmt.Fprintf(&sb, "- %s prs=%d authored_by_me=%d\n", repo, total, authored)
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("# Representative GitHub comments from Steven, curated and uncurated\n\n")
 	crows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.repo, c.pr_number, COALESCE(c.file_path,''), COALESCE(c.note,''), c.body,
-		       GROUP_CONCAT(ct.tag, ',') AS tags
-		FROM comments c
-		JOIN comment_tags ct ON ct.comment_id = c.id
-		WHERE ct.tag IN ('hard','style','tradeoff','praise')
-		  AND c.status != 'context'
-		GROUP BY c.id
-		ORDER BY c.created_at DESC
-		LIMIT 120`)
+		WITH ranked AS (
+			SELECT c.id, c.repo, c.pr_number, COALESCE(c.file_path,'') AS path, COALESCE(c.note,'') AS note, c.body,
+			       COALESCE(GROUP_CONCAT(ct.tag, ','), '') AS tags,
+			       ROW_NUMBER() OVER (
+				       PARTITION BY
+				       CASE
+				           WHEN c.file_path LIKE 'coderd/database/%' THEN 'database'
+				           WHEN c.file_path LIKE 'coderd/rbac/%' OR c.file_path LIKE '%auth%' THEN 'auth'
+				           WHEN c.file_path LIKE 'site/%' THEN 'frontend'
+				           WHEN c.file_path LIKE 'cli/%' THEN 'cli'
+				           WHEN c.file_path LIKE '%test%' THEN 'testing'
+				           WHEN c.file_path = '' THEN 'issue'
+				           ELSE 'backend'
+				       END
+				       ORDER BY
+				       CASE WHEN ct.tag IN ('hard','style','tradeoff','praise') THEN 0 ELSE 1 END,
+				       c.created_at DESC
+			   ) AS rn
+			FROM comments c
+			LEFT JOIN comment_tags ct ON ct.comment_id = c.id
+			WHERE c.is_context = 0
+			GROUP BY c.id
+		)
+		SELECT id, repo, pr_number, path, note, body, tags
+		FROM ranked
+		WHERE rn <= 28
+		ORDER BY repo, pr_number DESC, id
+		LIMIT 220`)
 	if err != nil {
 		return "", err
 	}
@@ -147,7 +199,11 @@ func (s *Server) gatherTenetContext(ctx context.Context) (string, error) {
 		if err := crows.Scan(&id, &repo, &pr, &path, &note, &body, &tags); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(&sb, "## comment %s [%s] on %s#%d", id, tags, repo, pr)
+		fmt.Fprintf(&sb, "## comment %s", id)
+		if tags != "" {
+			fmt.Fprintf(&sb, " [%s]", tags)
+		}
+		fmt.Fprintf(&sb, " on %s#%d", repo, pr)
 		if path != "" {
 			fmt.Fprintf(&sb, " (%s)", path)
 		}
@@ -155,7 +211,31 @@ func (s *Server) gatherTenetContext(ctx context.Context) (string, error) {
 		if note != "" {
 			fmt.Fprintf(&sb, "Steven note: %s\n", note)
 		}
-		fmt.Fprintf(&sb, "%s\n\n", truncateForPrompt(body, 1200))
+		fmt.Fprintf(&sb, "%s\n\n", truncateForPrompt(body, 900))
+	}
+
+	sb.WriteString("# Representative surrounding thread context from other reviewers\n\n")
+	ctxRows, err := s.db.QueryContext(ctx, `
+		SELECT id, repo, pr_number, author, COALESCE(file_path,''), body
+		FROM comments
+		WHERE is_context = 1
+		ORDER BY created_at DESC
+		LIMIT 80`)
+	if err != nil {
+		return "", err
+	}
+	defer ctxRows.Close()
+	for ctxRows.Next() {
+		var id, repo, author, path, body string
+		var pr int
+		if err := ctxRows.Scan(&id, &repo, &pr, &author, &path, &body); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sb, "## context %s by %s on %s#%d", id, author, repo, pr)
+		if path != "" {
+			fmt.Fprintf(&sb, " (%s)", path)
+		}
+		fmt.Fprintf(&sb, "\n%s\n\n", truncateForPrompt(body, 700))
 	}
 
 	sb.WriteString("# Existing tenets to avoid duplicating\n\n")
@@ -304,7 +384,7 @@ func (s *Server) renderTenetsList(w http.ResponseWriter, r *http.Request) {
 		"StatusFilter":   status,
 		"CategoryFilter": category,
 		"Statuses":       []string{"proposed", "canonical", "strong", "accepted", "weak", "edited", "rejected", "all"},
-		"Categories":     []string{"backend", "security", "api", "frontend", "operations", "testing", "architecture", "style", "process", "voice"},
+		"Categories":     []string{"backend", "database", "security", "api", "frontend", "operations", "testing", "architecture", "style", "process", "voice"},
 	}
 	if r.Header.Get("HX-Request") == "true" {
 		if err := s.tmpl.ExecuteTemplate(w, "tenets_section", data); err != nil {

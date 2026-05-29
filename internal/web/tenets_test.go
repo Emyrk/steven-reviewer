@@ -21,7 +21,7 @@ func TestNormalizeTenetProposalRejectsEmptyOrInvalid(t *testing.T) {
 
 func TestNormalizeTenetProposalTrimsAndDefaultsEvidence(t *testing.T) {
 	got, ok := normalizeTenetProposal(TenetProposal{
-		Category:  " Backend ",
+		Category:  " Database ",
 		Name:      " Operation context ",
 		Statement: " Name every 500 by operation. ",
 		Rationale: " Generic 500s make ops harder. ",
@@ -29,7 +29,7 @@ func TestNormalizeTenetProposalTrimsAndDefaultsEvidence(t *testing.T) {
 	if !ok {
 		t.Fatal("expected valid proposal")
 	}
-	if got.Category != "backend" || got.Name != "Operation context" || got.Statement != "Name every 500 by operation." || got.Rationale != "Generic 500s make ops harder." {
+	if got.Category != "database" || got.Name != "Operation context" || got.Statement != "Name every 500 by operation." || got.Rationale != "Generic 500s make ops harder." {
 		t.Fatalf("unexpected normalized proposal: %#v", got)
 	}
 	if string(got.Evidence) != "[]" {
