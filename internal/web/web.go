@@ -80,11 +80,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleList)
 	mux.HandleFunc("GET /prs", s.handlePRList)
 	mux.HandleFunc("GET /prs/random", s.handlePRRandom)
+	mux.HandleFunc("GET /prs/mine", s.handlePRMine)
 	mux.HandleFunc("GET /pr/{repo_owner}/{repo_name}/{number}", s.handlePRDetail)
 	mux.HandleFunc("POST /pr/{repo_owner}/{repo_name}/{number}/tag", s.handlePRTag)
 	mux.HandleFunc("GET /c/{id}", s.handleDetail)
 	mux.HandleFunc("POST /c/{id}/triage", s.handleTriage)
 	mux.HandleFunc("POST /c/{id}/context", s.handleContext)
+	mux.HandleFunc("POST /c/{id}/note", s.handleNote)
+	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /api/comments", s.handleAPIList)
 
@@ -926,4 +929,328 @@ func fmtDate(rfc3339 string) string {
 		return rfc3339
 	}
 	return t.Format("Jan 2, 2006")
+}
+
+// --- /c/{id}/note: save free-text per-comment note -----------------------
+
+func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	note := strings.TrimSpace(r.FormValue("note"))
+	redirectTo := r.FormValue("redirect_to")
+	if _, err := s.db.Exec(`UPDATE comments SET note = ? WHERE id = ?`, note, id); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if redirectTo != "" && strings.HasPrefix(redirectTo, "/") {
+		http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/c/"+id, http.StatusSeeOther)
+}
+
+// --- /search: query comment bodies, notes, and tags ----------------------
+
+type searchHit struct {
+	ID          string
+	Repo        string
+	PRNumber    int
+	URL         string
+	Author      string
+	BodySnippet template.HTML
+	NoteSnippet template.HTML
+	Tags        []string
+	Status      string
+	CreatedAt   string
+	FilePath    string
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	repoFilter := r.URL.Query().Get("repo")
+	field := r.URL.Query().Get("field") // body | note | tag | any (default)
+	if field == "" {
+		field = "any"
+	}
+	hasNote := r.URL.Query().Get("has_note") == "1"
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if k, err := strconv.Atoi(v); err == nil && k > 0 && k <= 500 {
+			limit = k
+		}
+	}
+
+	var hits []searchHit
+	var totalHits int
+	if q != "" || hasNote {
+		var (
+			where []string
+			args  []any
+		)
+		if repoFilter != "" && repoFilter != "all" {
+			where = append(where, "c.repo = ?")
+			args = append(args, repoFilter)
+		}
+		if hasNote {
+			where = append(where, "c.note IS NOT NULL AND TRIM(c.note) != ''")
+		}
+		if q != "" {
+			like := "%" + q + "%"
+			switch field {
+			case "body":
+				where = append(where, "c.body LIKE ?")
+				args = append(args, like)
+			case "note":
+				where = append(where, "c.note LIKE ?")
+				args = append(args, like)
+			case "tag":
+				where = append(where, "EXISTS (SELECT 1 FROM comment_tags ct WHERE ct.comment_id = c.id AND ct.tag LIKE ?)")
+				args = append(args, like)
+			default:
+				where = append(where, "(c.body LIKE ? OR c.note LIKE ? OR EXISTS (SELECT 1 FROM comment_tags ct WHERE ct.comment_id = c.id AND ct.tag LIKE ?))")
+				args = append(args, like, like, like)
+			}
+		}
+		whereSQL := "1=1"
+		if len(where) > 0 {
+			whereSQL = strings.Join(where, " AND ")
+		}
+		// Count first (cap at 5000 to bound work).
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM (SELECT 1 FROM comments c WHERE `+whereSQL+` LIMIT 5000)`, args...).Scan(&totalHits)
+
+		rows, err := s.db.Query(`
+			SELECT c.id, c.repo, c.pr_number, c.url, c.author, c.body,
+			       COALESCE(c.note, ''), c.status, c.created_at, COALESCE(c.file_path, '')
+			FROM comments c
+			WHERE `+whereSQL+`
+			ORDER BY c.created_at DESC
+			LIMIT ?`, append(args, limit)...)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var h searchHit
+			var body, note string
+			if err := rows.Scan(&h.ID, &h.Repo, &h.PRNumber, &h.URL, &h.Author, &body,
+				&note, &h.Status, &h.CreatedAt, &h.FilePath); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			h.BodySnippet = snippetHighlight(body, q, 200)
+			if note != "" {
+				h.NoteSnippet = snippetHighlight(note, q, 200)
+			}
+			hits = append(hits, h)
+		}
+		// Load tags per hit.
+		if len(hits) > 0 {
+			idSet := make([]any, 0, len(hits))
+			placeholders := make([]string, 0, len(hits))
+			for _, h := range hits {
+				idSet = append(idSet, h.ID)
+				placeholders = append(placeholders, "?")
+			}
+			trows, terr := s.db.Query(`SELECT comment_id, tag FROM comment_tags WHERE comment_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY added_at`, idSet...)
+			if terr == nil {
+				tagsByID := map[string][]string{}
+				for trows.Next() {
+					var cid, tag string
+					if trows.Scan(&cid, &tag) == nil {
+						tagsByID[cid] = append(tagsByID[cid], tag)
+					}
+				}
+				trows.Close()
+				for i := range hits {
+					hits[i].Tags = tagsByID[hits[i].ID]
+				}
+			}
+		}
+	}
+	repos, _ := s.queryRepoCounts()
+	data := map[string]any{
+		"Title":      "search · steven-reviewer",
+		"Query":      q,
+		"Field":      field,
+		"HasNote":    hasNote,
+		"RepoFilter": repoFilter,
+		"Repos":      repos,
+		"Hits":       hits,
+		"Total":      totalHits,
+		"Limit":      limit,
+		"Fields":     []string{"any", "body", "note", "tag"},
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "search.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
+}
+
+// snippetHighlight returns an HTML-escaped substring centered on the
+// first match of q (if any), wrapped with <mark> for each occurrence.
+// If q is empty, returns the first window chars.
+func snippetHighlight(text, q string, window int) template.HTML {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if q == "" {
+		if len(text) > window {
+			text = text[:window] + "…"
+		}
+		return template.HTML(template.HTMLEscapeString(text))
+	}
+	lower := strings.ToLower(text)
+	ql := strings.ToLower(q)
+	idx := strings.Index(lower, ql)
+	start := 0
+	if idx >= 0 {
+		start = idx - window/2
+		if start < 0 {
+			start = 0
+		}
+	}
+	end := start + window
+	if end > len(text) {
+		end = len(text)
+	}
+	snippet := text[start:end]
+	if start > 0 {
+		snippet = "…" + snippet
+	}
+	if end < len(text) {
+		snippet = snippet + "…"
+	}
+	// Highlight all (case-insensitive) occurrences.
+	escaped := template.HTMLEscapeString(snippet)
+	if q != "" {
+		// Re-find matches in escaped (HTMLEscapeString preserves char positions
+		// for ASCII-only chars but not for &/</>/" — close enough for snippets).
+		re := strings.ReplaceAll(template.HTMLEscapeString(q), "\"", "&#34;")
+		_ = re
+		// Simpler: do a case-insensitive scan over escaped.
+		var b strings.Builder
+		lowEsc := strings.ToLower(escaped)
+		ql2 := strings.ToLower(template.HTMLEscapeString(q))
+		i := 0
+		for i < len(lowEsc) {
+			j := strings.Index(lowEsc[i:], ql2)
+			if j < 0 {
+				b.WriteString(escaped[i:])
+				break
+			}
+			b.WriteString(escaped[i : i+j])
+			b.WriteString("<mark class=\"bg-yellow-200 px-0.5 rounded\">")
+			b.WriteString(escaped[i+j : i+j+len(ql2)])
+			b.WriteString("</mark>")
+			i += j + len(ql2)
+		}
+		escaped = b.String()
+	}
+	return template.HTML(escaped)
+}
+
+// --- /prs/mine: PRs I authored -------------------------------------------
+
+type minePR struct {
+	Repo      string
+	PRNumber  int
+	Title     string
+	State     string
+	OpenedAt  string
+	Tags      []string // pr_tags
+	HasNote   bool
+}
+
+func (s *Server) handlePRMine(w http.ResponseWriter, r *http.Request) {
+	repoFilter := r.URL.Query().Get("repo")
+	weightFilter := r.URL.Query().Get("weight") // e.g. "canonical", "like", "skip", ""
+	q := `SELECT p.repo, p.number, COALESCE(p.title, ''), COALESCE(p.state, ''),
+	             COALESCE(p.created_at, ''), COALESCE(p.merged, 0)
+	      FROM prs p
+	      WHERE p.authored_by_me = 1`
+	var args []any
+	if repoFilter != "" && repoFilter != "all" {
+		q += " AND p.repo = ?"
+		args = append(args, repoFilter)
+	}
+	q += " ORDER BY p.created_at DESC LIMIT 500"
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	var prs []minePR
+	for rows.Next() {
+		var p minePR
+		var merged int
+		var createdAt string
+		if err := rows.Scan(&p.Repo, &p.PRNumber, &p.Title, &p.State, &createdAt, &merged); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if merged == 1 {
+			p.State = "merged"
+		}
+		p.OpenedAt = fmtDate(createdAt)
+		prs = append(prs, p)
+	}
+
+	// Attach tags.
+	tagsBy := map[string][]string{}
+	notesBy := map[string]bool{}
+	trows, _ := s.db.Query(`SELECT repo, pr_number, tag, COALESCE(note,'') FROM pr_tags`)
+	if trows != nil {
+		for trows.Next() {
+			var rr string
+			var nn int
+			var tt, note string
+			if trows.Scan(&rr, &nn, &tt, &note) == nil {
+				k := fmt.Sprintf("%s#%d", rr, nn)
+				tagsBy[k] = append(tagsBy[k], tt)
+				if note != "" {
+					notesBy[k] = true
+				}
+			}
+		}
+		trows.Close()
+	}
+	filtered := make([]minePR, 0, len(prs))
+	for _, p := range prs {
+		k := fmt.Sprintf("%s#%d", p.Repo, p.PRNumber)
+		p.Tags = tagsBy[k]
+		p.HasNote = notesBy[k]
+		if weightFilter != "" {
+			match := false
+			for _, t := range p.Tags {
+				if t == "weight:"+weightFilter || t == weightFilter {
+					match = true
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		filtered = append(filtered, p)
+	}
+
+	repos, _ := s.queryRepoCounts()
+	data := map[string]any{
+		"Title":          "my PRs · steven-reviewer",
+		"PRs":            filtered,
+		"Repos":          repos,
+		"RepoFilter":     repoFilter,
+		"WeightFilter":   weightFilter,
+		"WeightOptions":  []string{"", "canonical", "high", "normal", "low", "skip"},
+		"Count":          len(filtered),
+		"TotalAuthored":  len(prs),
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "pr_mine.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
 }

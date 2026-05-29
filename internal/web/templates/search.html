@@ -1,0 +1,83 @@
+{{template "head" .}}
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <a href="/" class="text-gray-500 hover:text-gray-900">flat</a>
+  <a href="/prs?status=pending" class="text-gray-500 hover:text-gray-900">by PR</a>
+  <a href="/prs/random?status=pending" class="text-gray-500 hover:text-gray-900">🎲 random</a>
+  <span class="font-medium text-gray-900">🔎 search</span>
+</div>
+
+<form method="GET" action="/search" class="bg-white border border-gray-200 rounded p-4 mb-4">
+  <div class="flex gap-2 mb-3">
+    <input type="text" name="q" value="{{.Query}}" autofocus
+           placeholder="search bodies, notes, or tags…"
+           class="flex-1 px-3 py-2 border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 mono text-sm">
+    <button type="submit" class="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 text-sm font-medium">search</button>
+  </div>
+  <div class="flex flex-wrap items-center gap-4 text-xs">
+    <div class="flex items-center gap-1">
+      <span class="text-gray-500">field:</span>
+      {{range $.Fields}}
+        <label class="cursor-pointer">
+          <input type="radio" name="field" value="{{.}}" {{if eq $.Field .}}checked{{end}} class="mr-0.5">{{.}}
+        </label>
+      {{end}}
+    </div>
+    <div class="flex items-center gap-1">
+      <span class="text-gray-500">repo:</span>
+      <select name="repo" class="border border-gray-300 rounded px-1 py-0.5">
+        <option value="" {{if eq .RepoFilter ""}}selected{{end}}>all</option>
+        {{range .Repos}}
+          <option value="{{.Repo}}" {{if eq $.RepoFilter .Repo}}selected{{end}}>{{.Repo}}</option>
+        {{end}}
+      </select>
+    </div>
+    <label class="flex items-center gap-1 cursor-pointer">
+      <input type="checkbox" name="has_note" value="1" {{if .HasNote}}checked{{end}}>
+      <span>has a note</span>
+    </label>
+  </div>
+</form>
+
+{{if or .Query .HasNote}}
+  <div class="text-sm text-gray-500 mb-2">
+    {{if .Total}}{{.Total}}{{if ge .Total 5000}}+{{end}} matches{{else}}no matches{{end}}
+    {{if .Hits}}· showing {{len .Hits}} (limit {{.Limit}}){{end}}
+  </div>
+
+  <div class="space-y-2">
+  {{range .Hits}}
+    {{$parts := split .Repo "/"}}
+    <div class="bg-white border border-gray-200 rounded p-3 hover:border-blue-400">
+      <div class="flex items-baseline gap-2 mb-1 text-xs">
+        <a href="/pr/{{index $parts 0}}/{{index $parts 1}}/{{.PRNumber}}#c-{{.ID}}"
+           class="mono font-medium text-gray-900 hover:underline">{{.Repo}}#{{.PRNumber}}</a>
+        <span class="text-gray-500">{{.Author}}</span>
+        <span class="text-gray-400 mono">{{.CreatedAt}}</span>
+        {{if eq .Status "pending"}}<span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">pending</span>{{end}}
+        {{if eq .Status "routed"}}<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800">routed</span>{{end}}
+        {{if eq .Status "skipped"}}<span class="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">skipped</span>{{end}}
+        {{if .FilePath}}<span class="text-gray-400 mono truncate">{{.FilePath}}</span>{{end}}
+        <a href="{{.URL}}" target="_blank" class="ml-auto text-blue-600 hover:underline">github ↗</a>
+      </div>
+      <div class="text-sm text-gray-700 mb-1">{{.BodySnippet}}</div>
+      {{if .NoteSnippet}}
+      <div class="text-xs text-purple-800 bg-purple-50 border-l-2 border-purple-300 px-2 py-1 mb-1">
+        <span class="font-medium uppercase tracking-wide text-purple-600 mr-1">note</span>{{.NoteSnippet}}
+      </div>
+      {{end}}
+      {{if .Tags}}
+      <div class="text-xs">
+        {{range .Tags}}<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800 mr-1">{{.}}</span>{{end}}
+      </div>
+      {{end}}
+    </div>
+  {{end}}
+  </div>
+{{else}}
+  <div class="bg-white border border-gray-200 rounded px-4 py-8 text-center text-gray-500 text-sm">
+    Enter a query above. Searches bodies, notes, and tag values (case-insensitive substring).
+    <br>Tip: leave <code>q</code> empty and check <span class="mono">has a note</span> to find all noted comments.
+  </div>
+{{end}}
+
+{{template "foot" .}}

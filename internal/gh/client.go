@@ -189,6 +189,64 @@ func (c *Client) FetchPRMeta(ctx context.Context, repo string, number int) (PRMe
 	}, nil
 }
 
+// AuthoredPR is a row from the GH search-issues endpoint, scoped to PRs
+// authored by a given user.
+type AuthoredPR struct {
+	Repo      string
+	Number    int
+	Title     string
+	State     string // open | closed (search doesn't expose merged)
+	CreatedAt time.Time
+}
+
+// FetchAuthoredPRs queries GitHub search for PRs in `repo` authored by
+// `author`. Search caps at 1000 results; paginates 100 at a time. Sorts
+// by created-desc so the newest are first.
+func (c *Client) FetchAuthoredPRs(ctx context.Context, repo, author string) ([]AuthoredPR, error) {
+	q := url.Values{}
+	q.Set("q", fmt.Sprintf("repo:%s is:pr author:%s", repo, author))
+	q.Set("per_page", "100")
+	q.Set("sort", "created")
+	q.Set("order", "desc")
+	path := "/search/issues?" + q.Encode()
+
+	var out []AuthoredPR
+	prNumRE := regexp.MustCompile(`/pull/(\d+)$`)
+	for path != "" {
+		var page struct {
+			Items []struct {
+				Number      int       `json:"number"`
+				Title       string    `json:"title"`
+				State       string    `json:"state"`
+				CreatedAt   time.Time `json:"created_at"`
+				HTMLURL     string    `json:"html_url"`
+				PullRequest *struct{} `json:"pull_request"`
+			} `json:"items"`
+		}
+		next, err := c.getPaged(ctx, path, &page)
+		if err != nil {
+			return out, fmt.Errorf("search authored: %w", err)
+		}
+		for _, it := range page.Items {
+			if it.PullRequest == nil {
+				continue
+			}
+			n := it.Number
+			if n == 0 {
+				if m := prNumRE.FindStringSubmatch(it.HTMLURL); len(m) > 1 {
+					n, _ = strconv.Atoi(m[1])
+				}
+			}
+			out = append(out, AuthoredPR{
+				Repo: repo, Number: n, Title: it.Title,
+				State: it.State, CreatedAt: it.CreatedAt,
+			})
+		}
+		path = next
+	}
+	return out, nil
+}
+
 func (c *Client) fetchCommentsPaged(
 	ctx context.Context,
 	repo, author, since, endpoint string,

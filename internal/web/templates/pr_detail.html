@@ -114,11 +114,19 @@
     {{if $c.Tags}}
     <div class="text-xs text-gray-600 mb-1">
       tagged: {{range $c.Tags}}<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800 mr-1">{{.}}</span>{{end}}
-      {{if $c.Note}}<span class="ml-2 italic">"{{$c.Note}}"</span>{{end}}
     </div>
     {{else}}
-    <div class="text-xs"><span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">pending</span></div>
+    <div class="text-xs mb-1"><span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">pending</span></div>
     {{end}}
+    <form method="POST" action="/c/{{$c.ID}}/note" class="mt-2">
+      <input type="hidden" name="redirect_to" value="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}#c-{{$c.ID}}">
+      <div class="flex items-start gap-2">
+        <textarea name="note" rows="1" placeholder="note (why, context, retrospective…)"
+                  class="flex-1 text-xs px-2 py-1 border border-gray-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-y font-mono"
+                  data-orig="{{$c.Note}}">{{$c.Note}}</textarea>
+        <button type="submit" class="text-xs px-2 py-1 rounded bg-gray-100 border border-gray-300 hover:bg-gray-200 whitespace-nowrap">save note</button>
+      </div>
+    </form>
   </div>
 </div>
 {{end}}

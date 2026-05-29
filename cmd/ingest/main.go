@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/Emyrk/steven-reviewer/internal/config"
 	"github.com/Emyrk/steven-reviewer/internal/db"
@@ -50,6 +51,9 @@ func main() {
 	case "pull":
 		fs.Parse(args)
 		exit(runPull(*cfgPath, fs.Args()))
+	case "pull-authored":
+		fs.Parse(args)
+		exit(runPullAuthored(*cfgPath, fs.Args()))
 	case "walk":
 		fs.Parse(args)
 		exit(runWalk(*cfgPath, fs.Args()))
@@ -255,6 +259,81 @@ func runStatus(cfgPath string) error {
 			return err
 		}
 		fmt.Printf("%-30s %-15s %d\n", repo, status, n)
+	}
+	return nil
+}
+
+// runPullAuthored fetches the list of PRs authored by the configured
+// author for each repo, and upserts them into the prs table with
+// authored_by_me=1. Idempotent: re-running just refreshes title/state.
+func runPullAuthored(cfgPath string, args []string) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	token, err := cfg.Token()
+	if err != nil {
+		return err
+	}
+	client := gh.New(token)
+	d, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	repos := cfg.Repos
+	if len(args) > 0 {
+		want := args[0]
+		repos = nil
+		for _, r := range cfg.Repos {
+			if r.Name == want {
+				repos = append(repos, r)
+			}
+		}
+		if len(repos) == 0 {
+			return fmt.Errorf("repo %q not in config", want)
+		}
+	}
+
+	ctx := context.Background()
+	for _, r := range repos {
+		fmt.Printf("==> pull-authored %s (author=%s)\n", r.Name, r.Author)
+		prs, err := client.FetchAuthoredPRs(ctx, r.Name, r.Author)
+		if err != nil {
+			return fmt.Errorf("%s: %w", r.Name, err)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		var inserted, updated int
+		for _, p := range prs {
+			res, err := d.Exec(`INSERT INTO prs (repo, number, title, opener, state, created_at, authored_by_me, fetched_at)
+			                    VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+			                    ON CONFLICT(repo, number) DO UPDATE SET
+			                      title = excluded.title,
+			                      opener = COALESCE(NULLIF(prs.opener, ''), excluded.opener),
+			                      state = excluded.state,
+			                      created_at = COALESCE(NULLIF(prs.created_at, ''), excluded.created_at),
+			                      authored_by_me = 1,
+			                      fetched_at = excluded.fetched_at`,
+				p.Repo, p.Number, p.Title, r.Author, p.State,
+				p.CreatedAt.Format(time.RFC3339), now)
+			if err != nil {
+				return fmt.Errorf("upsert %s#%d: %w", p.Repo, p.Number, err)
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				// SQLite ON CONFLICT counts as 1 affected row whether insert or update;
+				// distinguish by checking if it was already there.
+				var existed int
+				_ = d.QueryRow(`SELECT 1 FROM prs WHERE repo=? AND number=? AND fetched_at < ?`,
+					p.Repo, p.Number, now).Scan(&existed)
+				if existed == 1 {
+					updated++
+				} else {
+					inserted++
+				}
+			}
+		}
+		fmt.Printf("    %d PRs (%d new, %d updated)\n", len(prs), inserted, updated)
 	}
 	return nil
 }
