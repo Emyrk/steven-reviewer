@@ -49,6 +49,8 @@ func NewServer(db *sql.DB) (*Server, error) {
 			return s
 		},
 		"replaceAll": strings.ReplaceAll,
+		"split":      strings.Split,
+		"add":        func(a, b int) int { return a + b },
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(assets, "templates/*.html")
 	if err != nil {
@@ -66,12 +68,12 @@ func NewServer(db *sql.DB) (*Server, error) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleList)
+	mux.HandleFunc("GET /prs", s.handlePRList)
+	mux.HandleFunc("GET /pr/{repo_owner}/{repo_name}/{number}", s.handlePRDetail)
 	mux.HandleFunc("GET /c/{id}", s.handleDetail)
 	mux.HandleFunc("POST /c/{id}/triage", s.handleTriage)
 	mux.HandleFunc("GET /api/comments", s.handleAPIList)
 
-	static, _ := http.FS(assets), 0
-	_ = static
 	mux.Handle("GET /static/", http.FileServer(http.FS(assets)))
 	return mux
 }
@@ -292,6 +294,7 @@ func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
 	}
 	decision := r.FormValue("decision")
 	note := r.FormValue("note")
+	redirectTo := r.FormValue("redirect_to")
 	allowed := map[string]bool{
 		"hard": true, "soft": true, "personal": true, "tradeoff": true,
 		"style": true, "praise": true, "skip": true, "needs-thought": true,
@@ -315,7 +318,12 @@ func (s *Server) handleTriage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	// Redirect to next pending in the same repo, or back to list.
+	// Explicit redirect from form (PR detail keeps you on the same page).
+	if redirectTo != "" && strings.HasPrefix(redirectTo, "/") {
+		http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+		return
+	}
+	// Otherwise, advance to the next pending in the same repo (flat list flow).
 	var repo, createdAt string
 	_ = s.db.QueryRow(`SELECT repo, created_at FROM comments WHERE id = ?`, id).Scan(&repo, &createdAt)
 	var nextID string
@@ -347,6 +355,169 @@ func (s *Server) handleAPIList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rows)
+}
+
+// --- PR-grouped views ---
+
+type prGroup struct {
+	Repo        string
+	PRNumber    int
+	Total       int
+	Pending     int
+	Routed      int
+	Skipped     int
+	LastComment string
+	Types       string // comma-separated set
+}
+
+func (s *Server) queryPRGroups(repoFilter, statusFilter string, limit int) ([]prGroup, error) {
+	// Group by PR with counts per status. Apply repo filter; apply status
+	// filter as a HAVING-ish predicate (PR appears only if it has at least
+	// one comment in that status, unless status=all).
+	where := "1=1"
+	var args []any
+	if repoFilter != "" && repoFilter != "all" {
+		where += " AND repo = ?"
+		args = append(args, repoFilter)
+	}
+	q := fmt.Sprintf(`
+		SELECT repo, pr_number,
+		       COUNT(*) AS total,
+		       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,
+		       SUM(CASE WHEN status='routed' THEN 1 ELSE 0 END) AS routed,
+		       SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) AS skipped,
+		       MAX(created_at) AS last_at,
+		       GROUP_CONCAT(DISTINCT comment_type) AS types
+		FROM comments
+		WHERE %s
+		GROUP BY repo, pr_number`, where)
+	if statusFilter == "pending" {
+		q += " HAVING pending > 0"
+	} else if statusFilter == "routed" {
+		q += " HAVING routed > 0"
+	} else if statusFilter == "skipped" {
+		q += " HAVING skipped > 0"
+	}
+	q += " ORDER BY last_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []prGroup
+	for rows.Next() {
+		var g prGroup
+		if err := rows.Scan(&g.Repo, &g.PRNumber, &g.Total, &g.Pending, &g.Routed, &g.Skipped, &g.LastComment, &g.Types); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, nil
+}
+
+func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
+	repoFilter := r.URL.Query().Get("repo")
+	statusFilter := r.URL.Query().Get("status")
+	if statusFilter == "" {
+		statusFilter = "pending"
+	}
+	limit := 200
+	groups, err := s.queryPRGroups(repoFilter, statusFilter, limit)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	repos, _ := s.queryRepoCounts()
+	data := map[string]any{
+		"Title":         "PRs · steven-reviewer",
+		"Groups":        groups,
+		"Repos":         repos,
+		"RepoFilter":    repoFilter,
+		"StatusFilter":  statusFilter,
+		"StatusOptions": []string{"pending", "routed", "skipped", "all"},
+		"Count":         len(groups),
+		"Limit":         limit,
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "pr_list.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
+}
+
+type prDetailComment struct {
+	model.Comment
+	BodyHTML template.HTML
+	DiffHTML template.HTML
+}
+
+func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("repo_owner")
+	name := r.PathValue("repo_name")
+	repo := owner + "/" + name
+	numStr := r.PathValue("number")
+	num, err := strconv.Atoi(numStr)
+	if err != nil {
+		http.Error(w, "bad pr number", 400)
+		return
+	}
+	rows, err := s.db.Query(`
+		SELECT id, repo, pr_number, comment_type, url, author, body,
+		       COALESCE(diff_hunk, ''), COALESCE(file_path, ''),
+		       COALESCE(pr_title, ''), created_at, status,
+		       COALESCE(decision, ''), COALESCE(routed_to, ''), COALESCE(note, '')
+		FROM comments
+		WHERE repo = ? AND pr_number = ?
+		ORDER BY created_at ASC`, repo, num)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	var comments []prDetailComment
+	for rows.Next() {
+		var c model.Comment
+		if err := rows.Scan(&c.ID, &c.Repo, &c.PRNumber, &c.CommentType, &c.URL, &c.Author, &c.Body,
+			&c.DiffHunk, &c.FilePath, &c.PRTitle, &c.CreatedAt, &c.Status,
+			&c.Decision, &c.RoutedTo, &c.Note); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		var bbuf strings.Builder
+		_ = s.md.Convert([]byte(c.Body), &bbuf)
+		var dhtml template.HTML
+		if c.DiffHunk != "" {
+			dhtml = template.HTML(highlightDiff(c.DiffHunk))
+		}
+		comments = append(comments, prDetailComment{
+			Comment:  c,
+			BodyHTML: template.HTML(bbuf.String()),
+			DiffHTML: dhtml,
+		})
+	}
+	if len(comments) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	prURL := fmt.Sprintf("https://github.com/%s/pull/%d", repo, num)
+	// best-effort: if any comment URL says /issues/ we treat as issue
+	for _, c := range comments {
+		if strings.Contains(c.URL, "/issues/") {
+			prURL = fmt.Sprintf("https://github.com/%s/issues/%d", repo, num)
+			break
+		}
+	}
+	data := map[string]any{
+		"Title":     fmt.Sprintf("%s#%d · steven-reviewer", repo, num),
+		"Repo":      repo,
+		"PRNumber":  num,
+		"PRURL":     prURL,
+		"Comments":  comments,
+		"Decisions": triageDecisions,
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "pr_detail.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
 }
 
 func highlightDiff(src string) string {

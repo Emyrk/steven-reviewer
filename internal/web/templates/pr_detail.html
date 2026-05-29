@@ -1,0 +1,57 @@
+{{template "head" .}}
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <a href="/prs" class="text-gray-500 hover:text-gray-900">← all PRs</a>
+  <a href="{{.PRURL}}" target="_blank" class="ml-auto text-blue-600 hover:underline">open on github ↗</a>
+</div>
+
+<div class="mb-4">
+  <h1 class="text-xl font-semibold">{{.Repo}}#{{.PRNumber}}</h1>
+  <p class="text-sm text-gray-500">{{len .Comments}} of your comments, in chronological order</p>
+</div>
+
+<div class="space-y-4">
+{{range $i, $c := .Comments}}
+<div class="bg-white border border-gray-200 rounded" id="c-{{$c.ID}}">
+  <div class="px-4 py-2 border-b border-gray-100 flex items-baseline gap-3 text-sm">
+    <span class="mono text-xs text-gray-500">#{{add $i 1}}</span>
+    <span class="text-xs px-1.5 py-0.5 rounded {{if eq $c.CommentType "review_comment"}}bg-purple-100 text-purple-800{{else}}bg-blue-100 text-blue-800{{end}}">{{$c.CommentType}}</span>
+    {{if $c.FilePath}}<span class="mono text-xs text-gray-500">{{$c.FilePath}}</span>{{end}}
+    <span class="ml-auto mono text-xs text-gray-400">{{$c.CreatedAt}}</span>
+    <a href="{{$c.URL}}" target="_blank" class="text-xs text-blue-600 hover:underline">github ↗</a>
+  </div>
+
+  {{if $c.DiffHTML}}
+  <div class="px-4 py-3 border-b border-gray-100">
+    <div class="text-xs uppercase tracking-wide text-gray-500 mb-1">diff hunk</div>
+    {{$c.DiffHTML}}
+  </div>
+  {{end}}
+
+  <div class="px-4 py-3 border-b border-gray-100">
+    <div class="prose-tight text-sm leading-relaxed">{{$c.BodyHTML}}</div>
+  </div>
+
+  <form method="POST" action="/c/{{$c.ID}}/triage" class="px-4 py-3 bg-gray-50">
+    <div class="flex flex-wrap gap-1.5 items-center">
+      <span class="text-xs uppercase tracking-wide text-gray-500 mr-2">triage:</span>
+      {{range $.Decisions}}
+        <button type="submit" name="decision" value="{{.Value}}"
+                class="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-100 hover:border-gray-400">
+          <span class="key">{{.Key}}</span> {{.Value}}
+        </button>
+      {{end}}
+      {{if $c.Decision}}
+      <span class="ml-2 px-1.5 py-0.5 text-xs rounded bg-green-100 text-green-800">{{$c.Decision}}</span>
+      {{if $c.Note}}<span class="text-xs text-gray-600 italic">"{{$c.Note}}"</span>{{end}}
+      {{else}}
+      <span class="ml-2 px-1.5 py-0.5 text-xs rounded bg-amber-100 text-amber-800">pending</span>
+      {{end}}
+    </div>
+    <input name="note" placeholder="optional one-line note"
+           class="mt-2 w-full text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500" />
+    <input type="hidden" name="redirect_to" value="/pr/{{(index (split $.Repo "/") 0)}}/{{(index (split $.Repo "/") 1)}}/{{$.PRNumber}}#c-{{$c.ID}}" />
+  </form>
+</div>
+{{end}}
+</div>
+{{template "foot" .}}

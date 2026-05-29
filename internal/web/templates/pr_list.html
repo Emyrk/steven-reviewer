@@ -1,0 +1,46 @@
+{{template "head" .}}
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <a href="/" class="text-gray-500 hover:text-gray-900">flat list</a>
+  <span class="font-medium text-gray-900">PR grouped</span>
+</div>
+
+<div class="flex items-center gap-3 mb-4 text-sm">
+  <span class="text-gray-500">repo:</span>
+  <a href="/prs?status={{.StatusFilter}}" class="px-2 py-1 rounded {{if or (eq .RepoFilter "") (eq .RepoFilter "all")}}bg-gray-900 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">all</a>
+  {{range .Repos}}
+  <a href="/prs?repo={{.Repo}}&status={{$.StatusFilter}}" class="px-2 py-1 rounded {{if eq $.RepoFilter .Repo}}bg-gray-900 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">
+    {{.Repo}} <span class="opacity-60">{{.Total}}</span>
+  </a>
+  {{end}}
+</div>
+
+<div class="flex items-center gap-2 mb-4 text-sm">
+  <span class="text-gray-500">has at least one:</span>
+  {{range $.StatusOptions}}
+  <a href="/prs?repo={{$.RepoFilter}}&status={{.}}" class="px-2 py-1 rounded {{if eq $.StatusFilter .}}bg-blue-600 text-white{{else}}bg-white border border-gray-200 hover:border-gray-400{{end}}">{{.}}</a>
+  {{end}}
+</div>
+
+<div class="text-sm text-gray-500 mb-2">{{.Count}} PRs (limit {{.Limit}})</div>
+
+<div class="bg-white border border-gray-200 rounded divide-y divide-gray-100">
+{{range .Groups}}
+  {{$parts := split .Repo "/"}}
+  <a href="/pr/{{index $parts 0}}/{{index $parts 1}}/{{.PRNumber}}" class="block px-4 py-3 hover:bg-gray-50">
+    <div class="flex items-baseline gap-3">
+      <span class="mono text-sm font-medium">{{.Repo}}#{{.PRNumber}}</span>
+      <span class="text-xs text-gray-400">{{.Types}}</span>
+      <span class="ml-auto mono text-xs text-gray-400">{{.LastComment}}</span>
+    </div>
+    <div class="mt-1 flex gap-3 text-xs">
+      <span class="text-gray-600">total <span class="font-medium text-gray-900">{{.Total}}</span></span>
+      {{if .Pending}}<span class="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">pending {{.Pending}}</span>{{end}}
+      {{if .Routed}}<span class="px-1.5 py-0.5 rounded bg-green-100 text-green-800">routed {{.Routed}}</span>{{end}}
+      {{if .Skipped}}<span class="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">skipped {{.Skipped}}</span>{{end}}
+    </div>
+  </a>
+{{else}}
+  <div class="px-4 py-8 text-center text-gray-500">no PRs match this filter</div>
+{{end}}
+</div>
+{{template "foot" .}}
