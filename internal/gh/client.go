@@ -134,10 +134,37 @@ func (c *Client) fetchComments(
 	repo, author, since, endpoint string,
 	parse func(repo string, r rawComment) IssueComment,
 ) ([]IssueComment, string, error) {
+	return c.fetchCommentsPaged(ctx, repo, author, since, endpoint, parse, nil)
+}
+
+// PageHandler is called with each page of matched comments and the
+// latest updated_at timestamp seen so far. It runs *inside* the fetch
+// loop so the caller can checkpoint to durable storage between pages,
+// making the overall fetch crash-safe.
+//
+// If a page handler returns an error, the fetch stops and returns it.
+type PageHandler func(matches []IssueComment, maxSeen string) error
+
+// FetchIssueCommentsPaged is like FetchIssueComments but invokes onPage
+// after each successful page. Use it for large backfills.
+func (c *Client) FetchIssueCommentsPaged(ctx context.Context, repo, author, since string, onPage PageHandler) ([]IssueComment, string, error) {
+	return c.fetchCommentsPaged(ctx, repo, author, since, "issues/comments", parseIssueComment, onPage)
+}
+
+// FetchReviewCommentsPaged is the review_comment counterpart.
+func (c *Client) FetchReviewCommentsPaged(ctx context.Context, repo, author, since string, onPage PageHandler) ([]IssueComment, string, error) {
+	return c.fetchCommentsPaged(ctx, repo, author, since, "pulls/comments", parseReviewComment, onPage)
+}
+
+func (c *Client) fetchCommentsPaged(
+	ctx context.Context,
+	repo, author, since, endpoint string,
+	parse func(repo string, r rawComment) IssueComment,
+	onPage PageHandler,
+) ([]IssueComment, string, error) {
 	var out []IssueComment
 	maxSeen := since
 
-	// Sort by updated asc so we can checkpoint as we go (resumable on crash).
 	q := url.Values{}
 	q.Set("per_page", "100")
 	q.Set("sort", "updated")
@@ -152,8 +179,9 @@ func (c *Client) fetchComments(
 		var page []rawComment
 		nextPath, err := c.getPaged(ctx, path, &page)
 		if err != nil {
-			return nil, "", fmt.Errorf("%s: %w", endpoint, err)
+			return out, maxSeen, fmt.Errorf("%s: %w", endpoint, err)
 		}
+		var pageMatches []IssueComment
 		for _, r := range page {
 			ts := r.UpdatedAt.Format(time.RFC3339)
 			if ts > maxSeen {
@@ -162,7 +190,14 @@ func (c *Client) fetchComments(
 			if !strings.EqualFold(r.User.Login, author) {
 				continue
 			}
-			out = append(out, parse(repo, r))
+			m := parse(repo, r)
+			pageMatches = append(pageMatches, m)
+			out = append(out, m)
+		}
+		if onPage != nil {
+			if err := onPage(pageMatches, maxSeen); err != nil {
+				return out, maxSeen, fmt.Errorf("page handler: %w", err)
+			}
 		}
 		path = nextPath
 	}
@@ -177,12 +212,39 @@ func (c *Client) get(ctx context.Context, path string, _ url.Values, out any) er
 }
 
 // getPaged is like get but also returns the next-page path parsed from
-// the Link header, or "" if no next page.
+// the Link header, or "" if no next page. Retries 5xx and 502 errors
+// with exponential backoff.
 func (c *Client) getPaged(ctx context.Context, path string, out any) (string, error) {
+	const maxAttempts = 5
+	backoff := 2 * time.Second
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		next, retry, err := c.getPagedOnce(ctx, path, out)
+		if err == nil {
+			return next, nil
+		}
+		lastErr = err
+		if !retry {
+			return "", err
+		}
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		backoff *= 2
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
+	return "", fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func (c *Client) getPagedOnce(ctx context.Context, path string, out any) (next string, retry bool, err error) {
 	full := restBase + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -190,48 +252,49 @@ func (c *Client) getPaged(ctx context.Context, path string, out any) (string, er
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("http: %w", err)
+		return "", true, fmt.Errorf("http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read: %w", err)
+		return "", true, fmt.Errorf("read: %w", err)
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		// rate limited
 		if ra := resp.Header.Get("Retry-After"); ra != "" {
 			if secs, err := strconv.Atoi(ra); err == nil {
 				select {
 				case <-time.After(time.Duration(secs) * time.Second):
-					return c.getPaged(ctx, path, out)
+					return c.getPagedOnce(ctx, path, out)
 				case <-ctx.Done():
-					return "", ctx.Err()
+					return "", false, ctx.Err()
 				}
 			}
 		}
-		// rate limit by X-RateLimit-Reset
 		if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
 			if epoch, err := strconv.ParseInt(reset, 10, 64); err == nil {
 				wait := time.Until(time.Unix(epoch, 0))
 				if wait > 0 && wait < 15*time.Minute {
 					select {
 					case <-time.After(wait + time.Second):
-						return c.getPaged(ctx, path, out)
+						return c.getPagedOnce(ctx, path, out)
 					case <-ctx.Done():
-						return "", ctx.Err()
+						return "", false, ctx.Err()
 					}
 				}
 			}
 		}
 	}
+	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+		return "", true, fmt.Errorf("HTTP %d on %s: %s", resp.StatusCode, path, truncate(string(body), 200))
+	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d on %s: %s", resp.StatusCode, path, truncate(string(body), 300))
+		return "", false, fmt.Errorf("HTTP %d on %s: %s", resp.StatusCode, path, truncate(string(body), 300))
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return "", fmt.Errorf("decode: %w", err)
+		return "", false, fmt.Errorf("decode: %w", err)
 	}
-	return nextPageFromLink(resp.Header.Get("Link")), nil
+	return nextPageFromLink(resp.Header.Get("Link")), false, nil
 }
 
 // nextPageFromLink parses an RFC 5988 Link header for rel="next" and

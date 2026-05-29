@@ -154,31 +154,43 @@ func runPull(cfgPath string, args []string) error {
 		fmt.Printf("==> pull %s (author=%s)\n", r.Name, r.Author)
 		for _, kind := range []struct {
 			label string
-			fn    func(context.Context, string, string, string) ([]gh.IssueComment, string, error)
+			fn    func(context.Context, string, string, string, gh.PageHandler) ([]gh.IssueComment, string, error)
 		}{
-			{"issue_comment", client.FetchIssueComments},
-			{"review_comment", client.FetchReviewComments},
+			{"issue_comment", client.FetchIssueCommentsPaged},
+			{"review_comment", client.FetchReviewCommentsPaged},
 		} {
 			since, err := db.Cursor(d, r.Name, kind.label)
 			if err != nil {
 				return fmt.Errorf("cursor %s/%s: %w", r.Name, kind.label, err)
 			}
-			fmt.Printf("    %-15s since=%q ... ", kind.label, since)
-			comments, nextSince, err := kind.fn(ctx, r.Name, r.Author, since)
+			fmt.Printf("    %-15s since=%q ...\n", kind.label, since)
+			var totalIns, totalUpd, totalMatched, pages int
+			onPage := func(matches []gh.IssueComment, maxSeen string) error {
+				pages++
+				ins, upd, err := db.UpsertComments(d, matches)
+				if err != nil {
+					return err
+				}
+				totalIns += ins
+				totalUpd += upd
+				totalMatched += len(matches)
+				if maxSeen != "" && maxSeen != since {
+					if err := db.SaveCursor(d, r.Name, kind.label, maxSeen); err != nil {
+						return err
+					}
+				}
+				if pages%10 == 0 {
+					fmt.Printf("        page %d: %d matched cumulative, cursor=%s\n", pages, totalMatched, maxSeen)
+				}
+				return nil
+			}
+			_, finalSince, err := kind.fn(ctx, r.Name, r.Author, since, onPage)
 			if err != nil {
+				fmt.Printf("        FAIL after page %d (cursor saved at %s): %v\n", pages, finalSince, err)
 				return fmt.Errorf("fetch %s/%s: %w", r.Name, kind.label, err)
 			}
-			ins, upd, err := db.UpsertComments(d, comments)
-			if err != nil {
-				return fmt.Errorf("upsert %s/%s: %w", r.Name, kind.label, err)
-			}
-			if nextSince != since && nextSince != "" {
-				if err := db.SaveCursor(d, r.Name, kind.label, nextSince); err != nil {
-					return fmt.Errorf("save cursor %s/%s: %w", r.Name, kind.label, err)
-				}
-			}
-			fmt.Printf("%d matched, %d new, %d updated, cursor=%s\n",
-				len(comments), ins, upd, nextSince)
+			fmt.Printf("    %-15s done: %d pages, %d matched, %d new, %d updated, cursor=%s\n",
+				kind.label, pages, totalMatched, totalIns, totalUpd, finalSince)
 		}
 	}
 	return nil
