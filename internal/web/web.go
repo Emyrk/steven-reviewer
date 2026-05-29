@@ -2,15 +2,20 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Emyrk/steven-reviewer/internal/gh"
 	"github.com/Emyrk/steven-reviewer/internal/model"
 	"github.com/alecthomas/chroma/v2"
 	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
@@ -30,10 +35,13 @@ type Server struct {
 	db   *sql.DB
 	tmpl *template.Template
 	md   goldmark.Markdown
+	gh   *gh.Client // optional, nil disables lazy PR-meta fetch
 }
 
 // NewServer constructs a Server. The database must already be migrated.
-func NewServer(db *sql.DB) (*Server, error) {
+// ghc may be nil; if so, /prs/random will only show PRs already cached
+// in the prs table.
+func NewServer(db *sql.DB, ghc *gh.Client) (*Server, error) {
 	funcs := template.FuncMap{
 		"ucFirst": func(s string) string {
 			if s == "" {
@@ -63,7 +71,7 @@ func NewServer(db *sql.DB) (*Server, error) {
 		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 		goldmark.WithRendererOptions(gmhtml.WithUnsafe()),
 	)
-	return &Server{db: db, tmpl: tmpl, md: md}, nil
+	return &Server{db: db, tmpl: tmpl, md: md, gh: ghc}, nil
 }
 
 // Routes returns the mux.
@@ -71,6 +79,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleList)
 	mux.HandleFunc("GET /prs", s.handlePRList)
+	mux.HandleFunc("GET /prs/random", s.handlePRRandom)
 	mux.HandleFunc("GET /pr/{repo_owner}/{repo_name}/{number}", s.handlePRDetail)
 	mux.HandleFunc("POST /pr/{repo_owner}/{repo_name}/{number}/tag", s.handlePRTag)
 	mux.HandleFunc("GET /c/{id}", s.handleDetail)
@@ -756,3 +765,165 @@ func highlightDiff(src string) string {
 }
 
 var _ chroma.Style // keep import for clarity
+
+// --- /prs/random: shuffle deck of 5 PRs ----------------------------------
+
+type randomPRCard struct {
+	Repo        string
+	PRNumber    int
+	Title       string
+	Opener      string
+	OpenedAt    string // human "May 29, 2026"
+	State       string // open|closed|merged
+	Total       int
+	Pending     int
+	Routed      int
+	Skipped     int
+	Weight      string
+	Cached      bool // false means we tried GH and failed
+	Err         string
+}
+
+// handlePRRandom picks N (default 5) random PRs from the comments table
+// (filtered by repo/status) and renders cards. Lazy-fetches title/opener
+// from GitHub the first time a PR is shown and caches in `prs`.
+func (s *Server) handlePRRandom(w http.ResponseWriter, r *http.Request) {
+	repoFilter := r.URL.Query().Get("repo")
+	statusFilter := r.URL.Query().Get("status")
+	if statusFilter == "" {
+		statusFilter = "pending"
+	}
+	n := 5
+	if v := r.URL.Query().Get("n"); v != "" {
+		if k, err := strconv.Atoi(v); err == nil && k > 0 && k <= 20 {
+			n = k
+		}
+	}
+	// Pull a candidate pool of PR groups, then sample n in Go.
+	// 500 keeps memory tiny and gives us good shuffle entropy across
+	// thousands of PRs without running ORDER BY RANDOM() on a big set.
+	groups, err := s.queryPRGroups(repoFilter, statusFilter, 500)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	rand.Shuffle(len(groups), func(i, j int) { groups[i], groups[j] = groups[j], groups[i] })
+	if len(groups) > n {
+		groups = groups[:n]
+	}
+
+	// Attach per-PR weight tag (same logic as handlePRList).
+	weights := map[string]string{}
+	if len(groups) > 0 {
+		wrows, werr := s.db.Query(`SELECT repo, pr_number, tag FROM pr_tags WHERE tag LIKE 'weight:%'`)
+		if werr == nil {
+			for wrows.Next() {
+				var rr string
+				var nn int
+				var tt string
+				if wrows.Scan(&rr, &nn, &tt) == nil {
+					weights[fmt.Sprintf("%s#%d", rr, nn)] = strings.TrimPrefix(tt, "weight:")
+				}
+			}
+			wrows.Close()
+		}
+	}
+
+	cards := make([]randomPRCard, 0, len(groups))
+	for _, g := range groups {
+		c := randomPRCard{
+			Repo:     g.Repo,
+			PRNumber: g.PRNumber,
+			Total:    g.Total,
+			Pending:  g.Pending,
+			Routed:   g.Routed,
+			Skipped:  g.Skipped,
+			Weight:   weights[fmt.Sprintf("%s#%d", g.Repo, g.PRNumber)],
+		}
+		title, opener, openedAt, state, merged, ok := s.lookupOrFetchPRMeta(r.Context(), g.Repo, g.PRNumber)
+		c.Title = title
+		c.Opener = opener
+		c.OpenedAt = openedAt
+		if merged {
+			c.State = "merged"
+		} else {
+			c.State = state
+		}
+		c.Cached = ok
+		if !ok {
+			c.Err = "no metadata (try shuffle again)"
+		}
+		cards = append(cards, c)
+	}
+
+	repos, _ := s.queryRepoCounts()
+	data := map[string]any{
+		"Title":         "random PRs · steven-reviewer",
+		"Cards":         cards,
+		"Repos":         repos,
+		"RepoFilter":    repoFilter,
+		"StatusFilter":  statusFilter,
+		"StatusOptions": []string{"pending", "routed", "skipped", "all"},
+		"N":             n,
+	}
+	if err := s.tmpl.ExecuteTemplate(w, "pr_random.html", data); err != nil {
+		http.Error(w, err.Error(), 500)
+	}
+}
+
+// lookupOrFetchPRMeta returns title/opener/openedAt/state and a cached
+// flag. Reads from prs table; on miss, calls GitHub once and upserts.
+// Never returns an error to the caller — failures degrade to a card
+// that just shows the PR number.
+func (s *Server) lookupOrFetchPRMeta(ctx context.Context, repo string, number int) (title, opener, openedAt, state string, merged, ok bool) {
+	row := s.db.QueryRow(`SELECT COALESCE(title,''), COALESCE(opener,''),
+	                              COALESCE(created_at,''), COALESCE(state,''), merged
+	                       FROM prs WHERE repo = ? AND number = ?`, repo, number)
+	var mergedInt int
+	err := row.Scan(&title, &opener, &openedAt, &state, &mergedInt)
+	merged = mergedInt == 1
+	if err == nil && title != "" && opener != "" {
+		return title, opener, fmtDate(openedAt), state, merged, true
+	}
+	// Fallback: title only from comments table.
+	if title == "" {
+		_ = s.db.QueryRow(`SELECT COALESCE(pr_title,'') FROM comments
+		                   WHERE repo = ? AND pr_number = ? AND pr_title IS NOT NULL AND pr_title != ''
+		                   LIMIT 1`, repo, number).Scan(&title)
+	}
+	if s.gh == nil {
+		return title, opener, fmtDate(openedAt), state, merged, title != "" && opener != ""
+	}
+	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	m, err := s.gh.FetchPRMeta(cctx, repo, number)
+	if err != nil {
+		log.Printf("FetchPRMeta %s#%d: %v", repo, number, err)
+		return title, opener, fmtDate(openedAt), state, merged, title != "" && opener != ""
+	}
+	if m.Merged {
+		mergedInt = 1
+	}
+	_, uerr := s.db.Exec(`INSERT INTO prs (repo, number, title, opener, state, merged, created_at, fetched_at)
+	                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	                      ON CONFLICT(repo, number) DO UPDATE SET
+	                        title=excluded.title, opener=excluded.opener, state=excluded.state,
+	                        merged=excluded.merged, created_at=excluded.created_at, fetched_at=excluded.fetched_at`,
+		repo, number, m.Title, m.Opener, m.State, mergedInt,
+		m.CreatedAt.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+	if uerr != nil {
+		log.Printf("upsert prs %s#%d: %v", repo, number, uerr)
+	}
+	return m.Title, m.Opener, fmtDate(m.CreatedAt.Format(time.RFC3339)), m.State, m.Merged, true
+}
+
+func fmtDate(rfc3339 string) string {
+	if rfc3339 == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return rfc3339
+	}
+	return t.Format("Jan 2, 2006")
+}

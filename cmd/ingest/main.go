@@ -212,7 +212,14 @@ func runServe(cfgPath, bind string) error {
 		return err
 	}
 	defer d.Close()
-	srv, err := web.NewServer(d)
+	// Optional GH client for lazy PR-meta fetch in /prs/random.
+	var ghc *gh.Client
+	if tok, terr := cfg.Token(); terr == nil && tok != "" {
+		ghc = gh.New(tok)
+	} else {
+		log.Printf("serve: no GH token (%v) — /prs/random will only show cached PR meta", terr)
+	}
+	srv, err := web.NewServer(d, ghc)
 	if err != nil {
 		return err
 	}
