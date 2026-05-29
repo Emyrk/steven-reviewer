@@ -31,7 +31,12 @@ repos:
 # Hermes API server (for the "Propose lessons" button on PR detail pages).
 # Reads HERMES_API_KEY from your environment (or set hermes.key directly,
 # but don't commit it). URL/model default to localhost Hermes if omitted.
+#
+# Recommended: run a separate `fast-reviewer` Hermes profile pinned to
+# Sonnet so lesson proposals don't burn Opus credits and don't interrupt
+# your main Hermes session. See ../my-agent/agent/skills/hermes-agent
+# references/dotfiles-symlink-integration.md "Recipe: secondary profile".
 hermes:
-  url: http://localhost:8642/v1
+  url: http://localhost:8643/v1
   key_env: HERMES_API_KEY
-  model: hermes-agent
+  model: fast-reviewer    # profile name becomes the model id
