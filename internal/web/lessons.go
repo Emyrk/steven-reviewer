@@ -201,7 +201,7 @@ func (s *Server) gatherPRContext(ctx context.Context, repo string, num int) (str
 	// Already-accepted lessons for this PR (avoid duplicates)
 	if lrows, err := s.db.QueryContext(ctx, `
 		SELECT kind, title FROM lessons
-		WHERE repo = ? AND pr_number = ? AND status IN ('accepted','edited')`, repo, num); err == nil {
+		WHERE repo = ? AND pr_number = ? AND status IN ('accepted','edited','strong','canonical','weak')`, repo, num); err == nil {
 		defer lrows.Close()
 		var existing []string
 		for lrows.Next() {
@@ -304,8 +304,10 @@ func (s *Server) handleLessonDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := r.FormValue("status")
-	if status != "accepted" && status != "rejected" {
-		http.Error(w, "status must be accepted|rejected", 400)
+	switch status {
+	case "rejected", "weak", "accepted", "strong", "canonical":
+	default:
+		http.Error(w, "status must be rejected|weak|accepted|strong|canonical", 400)
 		return
 	}
 	var repo string
@@ -404,10 +406,13 @@ func (s *Server) loadLessons(repo string, num int) ([]Lesson, error) {
 		       COALESCE(model,''), created_at, COALESCE(decided_at,'')
 		FROM lessons WHERE repo = ? AND pr_number = ?
 		ORDER BY CASE status
-		           WHEN 'proposed' THEN 0
-		           WHEN 'accepted' THEN 1
-		           WHEN 'edited' THEN 2
-		           WHEN 'rejected' THEN 3
+		           WHEN 'proposed'  THEN 0
+		           WHEN 'canonical' THEN 1
+		           WHEN 'strong'    THEN 2
+		           WHEN 'accepted'  THEN 3
+		           WHEN 'edited'    THEN 4
+		           WHEN 'weak'      THEN 5
+		           WHEN 'rejected'  THEN 6
 		         END, id`, repo, num)
 	if err != nil {
 		return nil, err
@@ -469,7 +474,7 @@ func (s *Server) handleLessonsList(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stats per kind
 	stats := map[string]int{}
-	srows, _ := s.db.Query(`SELECT kind, COUNT(*) FROM lessons WHERE status IN ('accepted','edited') GROUP BY kind`)
+	srows, _ := s.db.Query(`SELECT kind, COUNT(*) FROM lessons WHERE status IN ('accepted','edited','strong','canonical','weak') GROUP BY kind`)
 	if srows != nil {
 		for srows.Next() {
 			var k string
@@ -487,7 +492,7 @@ func (s *Server) handleLessonsList(w http.ResponseWriter, r *http.Request) {
 		"KindFilter":   kind,
 		"Stats":        stats,
 		"Kinds":        []string{"pattern", "antipattern", "tradeoff", "convention", "gotcha"},
-		"Statuses":     []string{"accepted", "edited", "proposed", "rejected", "all", "accepted,edited"},
+		"Statuses":     []string{"accepted,strong,canonical", "canonical", "strong", "accepted", "weak", "edited", "proposed", "rejected", "all"},
 	}
 	if err := s.tmpl.ExecuteTemplate(w, "lessons_list.html", data); err != nil {
 		http.Error(w, err.Error(), 500)

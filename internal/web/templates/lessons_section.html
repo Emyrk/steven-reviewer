@@ -27,7 +27,10 @@
   {{range .Lessons}}
     <div class="mb-3 p-3 rounded border
                 {{if eq .Status "proposed"}}border-purple-300 bg-purple-50
+                {{else if eq .Status "canonical"}}border-yellow-500 bg-yellow-50
+                {{else if eq .Status "strong"}}border-emerald-500 bg-emerald-50
                 {{else if eq .Status "accepted"}}border-green-400 bg-green-50
+                {{else if eq .Status "weak"}}border-amber-300 bg-amber-50
                 {{else if eq .Status "edited"}}border-blue-400 bg-blue-50
                 {{else if eq .Status "rejected"}}border-gray-300 bg-gray-100 opacity-60
                 {{else}}border-gray-200{{end}}">
@@ -39,7 +42,18 @@
                      {{else if eq .Kind "convention"}}bg-blue-200 text-blue-900
                      {{else if eq .Kind "gotcha"}}bg-orange-200 text-orange-900
                      {{else}}bg-gray-200{{end}}">{{.Kind}}</span>
-        <span class="text-xs px-1.5 py-0.5 rounded bg-gray-200 text-gray-700">{{.Status}}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded
+                     {{if eq .Status "canonical"}}bg-yellow-300 text-yellow-900
+                     {{else if eq .Status "strong"}}bg-emerald-300 text-emerald-900
+                     {{else if eq .Status "accepted"}}bg-green-300 text-green-900
+                     {{else if eq .Status "weak"}}bg-amber-200 text-amber-900
+                     {{else if eq .Status "rejected"}}bg-gray-300 text-gray-700
+                     {{else}}bg-gray-200 text-gray-700{{end}}">
+          {{if eq .Status "canonical"}}⭐ canonical
+          {{else if eq .Status "strong"}}💪 strong
+          {{else if eq .Status "weak"}}🤷 weak
+          {{else}}{{.Status}}{{end}}
+        </span>
         <span class="text-xs text-gray-400 ml-auto">
           {{if .Model}}{{.Model}} · {{end}}{{.Source}}
         </span>
@@ -47,38 +61,48 @@
       <div class="font-semibold mb-1">{{.Title}}</div>
       <div class="text-sm text-gray-800 whitespace-pre-wrap mb-2">{{.Body}}</div>
 
-      {{if eq .Status "proposed"}}
-        <div class="flex gap-2 text-sm">
-          <form hx-post="/lesson/{{.ID}}/decide"
+      {{/* 5-button strength scale — always visible, even on already-decided lessons,
+           so you can re-rate without going through edit. */}}
+      <div class="flex flex-wrap items-center gap-1 text-sm">
+        {{$curStatus := .Status}}
+        {{$id  := .ID}}
+        {{range (list "rejected" "weak" "accepted" "strong" "canonical")}}
+          {{$emoji := "?"}}
+          {{$label := .}}
+          {{if eq . "rejected"}}{{$emoji = "👎"}}{{end}}
+          {{if eq . "weak"}}{{$emoji = "🤷"}}{{end}}
+          {{if eq . "accepted"}}{{$emoji = "👍"}}{{end}}
+          {{if eq . "strong"}}{{$emoji = "💪"}}{{end}}
+          {{if eq . "canonical"}}{{$emoji = "⭐"}}{{end}}
+          <form hx-post="/lesson/{{$id}}/decide"
                 hx-target="#lessons-section" hx-swap="outerHTML" class="inline">
-            <input type="hidden" name="status" value="accepted">
-            <button class="px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">✓ accept</button>
+            <input type="hidden" name="status" value="{{.}}">
+            <button class="px-2 py-1 rounded
+                           {{if eq $curStatus .}}
+                             {{if eq . "rejected"}}bg-gray-500 text-white
+                             {{else if eq . "weak"}}bg-amber-400 text-white
+                             {{else if eq . "accepted"}}bg-green-600 text-white
+                             {{else if eq . "strong"}}bg-emerald-600 text-white
+                             {{else if eq . "canonical"}}bg-yellow-500 text-white
+                             {{end}}
+                           {{else}}
+                             bg-white border border-gray-200 hover:border-gray-400 text-gray-700
+                           {{end}}"
+                    title="{{$label}}">{{$emoji}}</button>
           </form>
-          <form hx-post="/lesson/{{.ID}}/decide"
-                hx-target="#lessons-section" hx-swap="outerHTML" class="inline">
-            <input type="hidden" name="status" value="rejected">
-            <button class="px-2 py-1 bg-gray-300 text-gray-800 rounded hover:bg-gray-400">✗ reject</button>
-          </form>
-          <button type="button"
-                  class="px-2 py-1 bg-blue-200 text-blue-900 rounded hover:bg-blue-300"
-                  onclick="document.getElementById('edit-{{.ID}}').classList.toggle('hidden')">
-            ✎ edit
-          </button>
-        </div>
-      {{else}}
-        <div class="flex gap-2 text-xs text-gray-500">
-          <button type="button"
-                  class="hover:text-blue-700"
-                  onclick="document.getElementById('edit-{{.ID}}').classList.toggle('hidden')">
-            ✎ edit
-          </button>
-          <form hx-post="/lesson/{{.ID}}/delete"
-                hx-target="#lessons-section" hx-swap="outerHTML"
-                hx-confirm="Delete this lesson?" class="inline">
-            <button class="hover:text-red-700">🗑 delete</button>
-          </form>
-        </div>
-      {{end}}
+        {{end}}
+        <span class="text-gray-300 mx-1">|</span>
+        <button type="button"
+                class="px-2 py-1 text-xs text-gray-500 hover:text-blue-700"
+                onclick="document.getElementById('edit-{{.ID}}').classList.toggle('hidden')">
+          ✎ edit
+        </button>
+        <form hx-post="/lesson/{{.ID}}/delete"
+              hx-target="#lessons-section" hx-swap="outerHTML"
+              hx-confirm="Delete this lesson?" class="inline">
+          <button class="px-2 py-1 text-xs text-gray-500 hover:text-red-700">🗑</button>
+        </form>
+      </div>
 
       <div id="edit-{{.ID}}" class="hidden mt-2 p-2 bg-white border border-gray-200 rounded">
         <form hx-post="/lesson/{{.ID}}/edit"

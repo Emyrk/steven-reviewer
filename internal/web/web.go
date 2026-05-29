@@ -885,6 +885,7 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 			"Lessons":  func() []Lesson { l, _ := s.loadLessons(repo, num); return l }(),
 		},
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	if err := s.tmpl.ExecuteTemplate(w, "pr_detail.html", data); err != nil {
 		http.Error(w, err.Error(), 500)
 	}
