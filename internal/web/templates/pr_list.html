@@ -43,6 +43,9 @@
   {{if and (gt .MaxLines 0) (gt .MissingEnrich 0)}}
   <span class="text-xs text-amber-700 ml-2" title="run: ./bin/ingest enrich-prs">⚠ {{.MissingEnrich}} PRs not yet enriched (hidden)</span>
   {{end}}
+  {{if gt .DeletedCount 0}}
+  <span class="text-xs text-gray-400 ml-2" title="PRs that returned 404 (branch/PR deleted from GitHub)">🪦 {{.DeletedCount}} deleted on GitHub</span>
+  {{end}}
 </div>
 
 <div class="text-sm text-gray-500 mb-2">{{.Count}} PRs (limit {{.Limit}})</div>

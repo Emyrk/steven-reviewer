@@ -679,8 +679,11 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 	doneCount := 0
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pr_tags WHERE tag = 'done'`).Scan(&doneCount)
 	// Count PRs missing diff-size enrichment so the user knows what `max_lines` hides.
+	// Exclude tombstoned (state='deleted') PRs — they 404 on GitHub and will never enrich.
 	missingEnrich := 0
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE additions IS NULL OR additions = 0`).Scan(&missingEnrich)
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE (additions IS NULL OR additions = 0) AND COALESCE(state,'') != 'deleted'`).Scan(&missingEnrich)
+	deletedCount := 0
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM prs WHERE state = 'deleted'`).Scan(&deletedCount)
 	data := map[string]any{
 		"Title":         "PRs · steven-reviewer",
 		"Groups":        groups,
@@ -693,6 +696,7 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 		"MaxLines":      maxLines,
 		"MaxLinesOpts":  []int{50, 100, 200, 400, 800},
 		"MissingEnrich": missingEnrich,
+		"DeletedCount":  deletedCount,
 		"Count":         len(groups),
 		"Limit":         limit,
 	}
@@ -759,8 +763,14 @@ func (s *Server) handlePRDetail(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if len(comments) == 0 {
-		http.NotFound(w, r)
-		return
+		// No Steven-comments — but the PR may still exist (e.g. authored).
+		// Only 404 if we have nothing cached at all.
+		var exists int
+		_ = s.db.QueryRow(`SELECT 1 FROM prs WHERE repo = ? AND number = ?`, repo, num).Scan(&exists)
+		if exists == 0 {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	// Load tags per comment (one query, then bucketed).
 	tagMap := map[string][]string{}

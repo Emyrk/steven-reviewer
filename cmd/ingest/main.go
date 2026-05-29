@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Emyrk/steven-reviewer/internal/config"
@@ -510,6 +511,14 @@ func runEnrichPRs(cfgPath string, args []string, force bool) error {
 			errs++
 			if errs <= 5 || errs%50 == 0 {
 				fmt.Printf("    [%d/%d] %s#%d ERR: %v\n", i+1, len(candidates), k.Repo, k.Number, err)
+			}
+			// Tombstone 404s so they don't show as "not yet enriched" forever.
+			if strings.Contains(err.Error(), "HTTP 404") {
+				_, _ = d.Exec(`INSERT INTO prs (repo, number, state, fetched_at)
+				               VALUES (?, ?, 'deleted', ?)
+				               ON CONFLICT(repo, number) DO UPDATE SET
+				                 state='deleted', fetched_at=excluded.fetched_at`,
+					k.Repo, k.Number, time.Now().UTC().Format(time.RFC3339))
 			}
 			continue
 		}
