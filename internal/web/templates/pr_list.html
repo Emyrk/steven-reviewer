@@ -30,6 +30,9 @@
     <div class="flex items-baseline gap-3">
       <span class="mono text-sm font-medium">{{.Repo}}#{{.PRNumber}}</span>
       <span class="text-xs text-gray-400">{{.Types}}</span>
+      {{if .Weight}}
+        <span class="text-xs px-1.5 py-0.5 rounded {{if eq .Weight "skip"}}bg-gray-200 text-gray-700{{else if eq .Weight "low"}}bg-blue-100 text-blue-800{{else if eq .Weight "high"}}bg-emerald-100 text-emerald-800{{else}}bg-purple-100 text-purple-800{{end}}" title="PR weight: {{.Weight}}">weight: {{.Weight}}</span>
+      {{end}}
       <span class="ml-auto mono text-xs text-gray-400">{{.LastComment}}</span>
     </div>
     <div class="mt-1 flex gap-3 text-xs">

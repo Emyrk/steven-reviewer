@@ -70,6 +70,19 @@ shown alongside its rationale).
   </tbody>
 </table>
 
+<h2 class="text-lg font-semibold mt-8 mb-2">PR-level weight</h2>
+<p class="text-sm text-gray-600 mb-2">
+Controls how heavily the synthesizer pulls signal from a PR's comments.
+Mutually exclusive &mdash; setting one clears the prior weight. Unset = normal weight.
+</p>
+<ul class="list-disc list-inside text-sm text-gray-700 space-y-1 mb-3">
+  <li><code>weight:skip</code> &mdash; don't use this PR's comments for persona training at all. Bikeshed, drive-by, "lgtm", you regret the review.</li>
+  <li><code>weight:low</code> &mdash; quick triage, trivial comments, low signal. Include but don't lean on it.</li>
+  <li><span class="text-gray-400">(unset = normal)</span> &mdash; default; ordinary review with ordinary signal.</li>
+  <li><code>weight:high</code> &mdash; strong signal. Substantive review where your taste shows. Pull representative chunks.</li>
+  <li><code>weight:canonical</code> &mdash; this PR's discussion is the textbook example. Highest priority for the persona compiler.</li>
+</ul>
+
 <h2 class="text-lg font-semibold mt-8 mb-2">PR-level tags</h2>
 <p class="text-sm text-gray-600 mb-2">
 On the PR detail page you can tag the whole PR (not a specific comment)

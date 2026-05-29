@@ -29,6 +29,22 @@
            class="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500 flex-1">
     <button type="submit" class="text-xs px-3 py-1 rounded bg-yellow-600 text-white hover:bg-yellow-700">tag PR</button>
   </form>
+  <div class="mt-2 flex flex-wrap gap-1.5 items-center">
+    <span class="text-xs uppercase tracking-wide text-gray-600 mr-1">weight:</span>
+    {{$weightAction := printf "/pr/%s/%s/%d/tag" (index (split .Repo "/") 0) (index (split .Repo "/") 1) .PRNumber}}
+    {{$current := ""}}{{range .PRTags}}{{if hasPrefix .Tag "weight:"}}{{$current = .Tag}}{{end}}{{end}}
+    {{range $w := list "weight:skip" "weight:low" "weight:high" "weight:canonical"}}
+    <form method="POST" action="{{$weightAction}}" class="inline">
+      <input type="hidden" name="tag" value="{{$w}}">
+      {{if eq $current $w}}<input type="hidden" name="remove" value="1">{{end}}
+      <button type="submit" class="text-xs px-2 py-0.5 rounded border {{if eq $current $w}}bg-yellow-500 text-white border-yellow-600{{else}}bg-white text-gray-700 border-gray-300 hover:bg-yellow-100{{end}}"
+              title="{{if eq $w "weight:skip"}}don't include in persona training{{else if eq $w "weight:low"}}quick/trivial, low signal{{else if eq $w "weight:high"}}strong signal{{else}}canonical example, highest weight{{end}}">
+        {{index (split $w ":") 1}}
+      </button>
+    </form>
+    {{end}}
+    <span class="text-xs text-gray-400 ml-1">(default = normal)</span>
+  </div>
   <div class="mt-1 text-xs text-gray-500">examples: <code>rocks</code>, <code>canonical</code>, <code>reread</code>, <code>authored-by-me</code>, <code>antipattern</code></div>
 </div>
 

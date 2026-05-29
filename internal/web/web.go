@@ -50,6 +50,8 @@ func NewServer(db *sql.DB) (*Server, error) {
 		},
 		"replaceAll": strings.ReplaceAll,
 		"split":      strings.Split,
+		"hasPrefix":  strings.HasPrefix,
+		"list":       func(items ...string) []string { return items },
 		"add":        func(a, b int) int { return a + b },
 	}
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(assets, "templates/*.html")
@@ -464,6 +466,14 @@ func (s *Server) handlePRTag(w http.ResponseWriter, r *http.Request) {
 	if remove != "" {
 		_, _ = s.db.Exec(`DELETE FROM pr_tags WHERE repo = ? AND pr_number = ? AND tag = ?`, repo, num, tag)
 	} else {
+		// weight:* tags are mutually exclusive — clicking a new weight clears
+		// any prior weight on the same PR. Same for review:* (review-quality).
+		for _, prefix := range []string{"weight:", "review:"} {
+			if strings.HasPrefix(tag, prefix) {
+				_, _ = s.db.Exec(`DELETE FROM pr_tags WHERE repo = ? AND pr_number = ? AND tag LIKE ? AND tag != ?`,
+					repo, num, prefix+"%", tag)
+			}
+		}
 		_, err = s.db.Exec(`
 			INSERT INTO pr_tags (repo, pr_number, tag, note, added_at)
 			VALUES (?, ?, ?, NULLIF(?, ''), datetime('now'))
@@ -507,6 +517,7 @@ type prGroup struct {
 	Skipped     int
 	LastComment string
 	Types       string // comma-separated set
+	Weight      string // "skip" | "low" | "high" | "canonical" | "" (normal/unset)
 }
 
 func (s *Server) queryPRGroups(repoFilter, statusFilter string, limit int) ([]prGroup, error) {
@@ -567,6 +578,25 @@ func (s *Server) handlePRList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
+	}
+	// Attach weight tag per PR.
+	if len(groups) > 0 {
+		weights := map[string]string{}
+		wrows, werr := s.db.Query(`SELECT repo, pr_number, tag FROM pr_tags WHERE tag LIKE 'weight:%'`)
+		if werr == nil {
+			for wrows.Next() {
+				var r string
+				var n int
+				var t string
+				if wrows.Scan(&r, &n, &t) == nil {
+					weights[fmt.Sprintf("%s#%d", r, n)] = strings.TrimPrefix(t, "weight:")
+				}
+			}
+			wrows.Close()
+		}
+		for i := range groups {
+			groups[i].Weight = weights[fmt.Sprintf("%s#%d", groups[i].Repo, groups[i].PRNumber)]
+		}
 	}
 	repos, _ := s.queryRepoCounts()
 	data := map[string]any{
