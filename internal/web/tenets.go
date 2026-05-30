@@ -27,11 +27,21 @@ type Tenet struct {
 	Statement string
 	Rationale string
 	Evidence  string
+	Refs      []TenetEvidenceRef
 	Status    string
 	Source    string
 	Model     string
 	CreatedAt string
 	DecidedAt string
+}
+
+// TenetEvidenceRef is a clickable source reference extracted from a tenet's
+// evidence JSON. Comment references point at the original reviewer example.
+type TenetEvidenceRef struct {
+	Type  string `json:"type"`
+	ID    string `json:"id"`
+	URL   string
+	Label string
 }
 
 var validTenetCategories = map[string]bool{
@@ -91,6 +101,31 @@ func normalizeTenetProposal(p TenetProposal) (TenetProposal, bool) {
 		p.Evidence = json.RawMessage("[]")
 	}
 	return p, true
+}
+
+func tenetEvidenceRefs(raw string) []TenetEvidenceRef {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var refs []TenetEvidenceRef
+	if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+		return nil
+	}
+	for i := range refs {
+		refs[i].Type = strings.TrimSpace(refs[i].Type)
+		refs[i].ID = strings.TrimSpace(refs[i].ID)
+		switch refs[i].Type {
+		case "comment":
+			refs[i].URL = "/c/" + refs[i].ID
+			refs[i].Label = "comment " + refs[i].ID
+		case "lesson":
+			refs[i].URL = "/lessons"
+			refs[i].Label = "lesson " + refs[i].ID
+		default:
+			refs[i].Label = strings.TrimSpace(refs[i].Type + " " + refs[i].ID)
+		}
+	}
+	return refs
 }
 
 func (s *Server) gatherTenetContext(ctx context.Context) (string, error) {
@@ -430,6 +465,7 @@ func (s *Server) loadTenets(status, category string) ([]Tenet, map[string]int, e
 		if err := rows.Scan(&t.ID, &t.Category, &t.Name, &t.Statement, &t.Rationale, &t.Evidence, &t.Status, &t.Source, &t.Model, &t.CreatedAt, &t.DecidedAt); err != nil {
 			return nil, nil, err
 		}
+		t.Refs = tenetEvidenceRefs(t.Evidence)
 		out = append(out, t)
 	}
 	stats := map[string]int{}
